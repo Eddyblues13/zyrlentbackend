@@ -23,6 +23,8 @@ return [
         'http://localhost:5173',
         'http://localhost:5174',
         'http://localhost:5175',
+        'https://www.zyrlent.com',
+        'https://www.zyrlent.com/',
     ],
 
     'allowed_origins_patterns' => [],
