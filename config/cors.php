@@ -25,6 +25,10 @@ return [
         'http://localhost:5175',
         'https://www.zyrlent.com',
         'https://www.zyrlent.com/',
+        'https://zyrlent.com',
+        'https://zyrlent.com/',
+        'https://api.zyrlent.com',
+        'https://api.zyrlent.com/',
     ],
 
     'allowed_origins_patterns' => [],
