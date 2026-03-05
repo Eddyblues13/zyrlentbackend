@@ -62,4 +62,18 @@ class User extends Authenticatable
     {
         return $this->hasMany(Transaction::class);
     }
+
+    /**
+     * Send the password reset notification.
+     *
+     * @param  string  $token
+     * @return void
+     */
+    public function sendPasswordResetNotification($token)
+    {
+        $frontendUrl = config('app.frontend_url', 'https://www.zyrlent.com');
+        $url = $frontendUrl . '/reset-password?token=' . $token . '&email=' . urlencode($this->email);
+
+        $this->notify(new \Illuminate\Auth\Notifications\ResetPassword($url));
+    }
 }

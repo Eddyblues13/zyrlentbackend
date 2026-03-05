@@ -164,6 +164,19 @@ class AuthController extends Controller
         ]);
     }
 
+    public function showResetForm(Request $request, $token = null)
+    {
+        // For an API API, we typically just need the route to exist to construct the URL
+        // However, we want the generated email link to point to the frontend app, so we can intercept it here
+        // or ensure the ResetPassword notification creates a frontend URL directly. 
+        // Returning JSON here just in case it is hit directly.
+        return response()->json([
+            'message' => 'Please use the frontend application to reset your password.',
+            'token' => $token,
+            'email' => $request->email
+        ]);
+    }
+
     public function forgotPassword(ForgotPasswordRequest $request)
     {
         $status = Password::sendResetLink($request->only('email'));
