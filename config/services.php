@@ -36,3 +36,10 @@ return [
     ],
 
 ];
+
+    'korapay' => [
+        'public_key' => env('KORAPAY_PUBLIC_KEY'),
+        'secret_key' => env('KORAPAY_SECRET_KEY'),
+        'encryption_key' => env('KORAPAY_ENCRYPTION_KEY'),
+        'webhook_secret' => env('KORAPAY_WEBHOOK_SECRET'),
+    ],
