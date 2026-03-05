@@ -54,6 +54,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/wallet/balance', [WalletController::class, 'balance']);
     Route::get('/wallet/transactions', [WalletController::class, 'transactions']);
     Route::post('/wallet/manual-fund', [WalletController::class, 'manualFund']);
+    
+    // KoraPay Funding
+    Route::post('/wallet/korapay/initialize', [\App\Http\Controllers\KoraPayController::class, 'initialize']);
+    Route::post('/wallet/korapay/verify', [\App\Http\Controllers\KoraPayController::class, 'verify']);
 });
 
 // ═══════════════════════════════════════════════════════════════
