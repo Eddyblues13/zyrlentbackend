@@ -23,14 +23,34 @@ class AuthController extends Controller
             'email' => 'required|string|email|max:255|unique:users',
             'phone' => 'nullable|string|max:20',
             'password' => 'required|string|min:8|confirmed',
+            'referral_code' => 'nullable|string|max:12',
         ]);
+
+        // Look up referrer if a referral code was provided
+        $referrerId = null;
+        if (!empty($validated['referral_code'])) {
+            $referrer = User::where('referral_code', $validated['referral_code'])->first();
+            if ($referrer) {
+                $referrerId = $referrer->id;
+            }
+        }
 
         $user = User::create([
             'name' => $validated['name'],
             'email' => $validated['email'],
             'phone' => $validated['phone'] ?? null,
             'password' => Hash::make($validated['password']),
+            'referred_by' => $referrerId,
         ]);
+
+        // Create a referral tracking record if referred
+        if ($referrerId) {
+            \App\Models\Referral::create([
+                'referrer_id' => $referrerId,
+                'referred_id' => $user->id,
+                'status' => 'pending',
+            ]);
+        }
 
         // Generate and send 4-digit verification code
         $this->generateAndSendCode($user->email);

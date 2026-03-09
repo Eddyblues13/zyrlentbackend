@@ -7,6 +7,8 @@ use App\Http\Controllers\OrderController;
 use App\Http\Controllers\ServiceController;
 use App\Http\Controllers\WalletController;
 use App\Http\Controllers\WebhookController;
+use App\Http\Controllers\SupportTicketUserController;
+use App\Http\Controllers\NotificationUserController;
 use App\Http\Controllers\Admin\AdminAuthController;
 use App\Http\Controllers\Admin\AdminDashboardController;
 use App\Http\Controllers\Admin\ServiceManagerController;
@@ -15,6 +17,9 @@ use App\Http\Controllers\Admin\UserManagerController;
 use App\Http\Controllers\Admin\OrderManagerController;
 use App\Http\Controllers\Admin\WalletManagerController;
 use App\Http\Controllers\Admin\ApiSettingsController;
+use App\Http\Controllers\Admin\SupportTicketController;
+use App\Http\Controllers\Admin\NotificationController;
+use App\Http\Controllers\Admin\ReferralManagerController;
 use Illuminate\Support\Facades\Route;
 
 // ─── Public (no auth) ───────────────────────────────────────
@@ -58,6 +63,19 @@ Route::middleware('auth:sanctum')->group(function () {
     // KoraPay Funding
     Route::post('/wallet/korapay/initialize', [\App\Http\Controllers\KoraPayController::class, 'initialize']);
     Route::post('/wallet/korapay/verify', [\App\Http\Controllers\KoraPayController::class, 'verify']);
+
+    // Referrals
+    Route::get('/referrals', [\App\Http\Controllers\ReferralController::class, 'index']);
+
+    // Support Tickets (user-facing)
+    Route::get('/support-tickets', [SupportTicketUserController::class, 'index']);
+    Route::post('/support-tickets', [SupportTicketUserController::class, 'store']);
+    Route::get('/support-tickets/{ticket}', [SupportTicketUserController::class, 'show']);
+
+    // Notifications (user-facing)
+    Route::get('/notifications', [NotificationUserController::class, 'index']);
+    Route::get('/notifications/unread-count', [NotificationUserController::class, 'unreadCount']);
+    Route::post('/notifications/{notification}/read', [NotificationUserController::class, 'markRead']);
 });
 
 // ═══════════════════════════════════════════════════════════════
@@ -98,6 +116,11 @@ Route::prefix('admin')->middleware('auth:sanctum')->group(function () {
     Route::get('/users', [UserManagerController::class, 'index']);
     Route::get('/users/{user}', [UserManagerController::class, 'show']);
     Route::post('/users/{user}/credit', [UserManagerController::class, 'creditWallet']);
+    Route::post('/users/{user}/debit', [UserManagerController::class, 'debitWallet']);
+    Route::post('/users/{user}/suspend', [UserManagerController::class, 'toggleSuspend']);
+    Route::post('/users/{user}/email', [UserManagerController::class, 'sendEmail']);
+    Route::post('/users/{user}/notify', [UserManagerController::class, 'sendNotification']);
+    Route::post('/users/{user}/login-as', [UserManagerController::class, 'loginAsUser']);
 
     // Order Management
     Route::get('/orders', [OrderManagerController::class, 'index']);
@@ -107,6 +130,21 @@ Route::prefix('admin')->middleware('auth:sanctum')->group(function () {
     Route::get('/funds/pending', [WalletManagerController::class, 'pendingFunds']);
     Route::post('/funds/{transaction}/confirm', [WalletManagerController::class, 'confirmFund']);
     Route::post('/funds/{transaction}/reject', [WalletManagerController::class, 'rejectFund']);
+
+    // Support Tickets (admin)
+    Route::get('/support-tickets', [SupportTicketController::class, 'index']);
+    Route::get('/support-tickets/{ticket}', [SupportTicketController::class, 'show']);
+    Route::post('/support-tickets/{ticket}/reply', [SupportTicketController::class, 'reply']);
+    Route::put('/support-tickets/{ticket}/status', [SupportTicketController::class, 'updateStatus']);
+
+    // Notifications (admin)
+    Route::get('/notifications', [NotificationController::class, 'index']);
+    Route::post('/notifications/broadcast', [NotificationController::class, 'broadcast']);
+    Route::post('/notifications/email-blast', [NotificationController::class, 'emailBlast']);
+
+    // Referral Management
+    Route::get('/referrals', [ReferralManagerController::class, 'index']);
+    Route::get('/referrals/stats', [ReferralManagerController::class, 'stats']);
 
     // API Settings
     Route::get('/settings', [ApiSettingsController::class, 'index']);

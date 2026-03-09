@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
+use Illuminate\Support\Str;
 
 class User extends Authenticatable
 {
@@ -23,6 +24,10 @@ class User extends Authenticatable
         'email',
         'phone',
         'password',
+        'referral_code',
+        'referred_by',
+        'is_suspended',
+        'suspended_reason',
     ];
 
     /**
@@ -48,6 +53,18 @@ class User extends Authenticatable
         ];
     }
 
+    /**
+     * Boot the model — auto-generate referral code.
+     */
+    protected static function booted(): void
+    {
+        static::creating(function (User $user) {
+            if (empty($user->referral_code)) {
+                $user->referral_code = 'ZYR-' . strtoupper(Str::random(6));
+            }
+        });
+    }
+
     public function wallet()
     {
         return $this->hasOne(Wallet::class);
@@ -61,6 +78,32 @@ class User extends Authenticatable
     public function transactions()
     {
         return $this->hasMany(Transaction::class);
+    }
+
+    /**
+     * Referrals this user has made (as the referrer).
+     */
+    public function referrals()
+    {
+        return $this->hasMany(Referral::class, 'referrer_id');
+    }
+
+    /**
+     * The user who referred this user.
+     */
+    public function referredBy()
+    {
+        return $this->belongsTo(User::class, 'referred_by');
+    }
+
+    public function supportTickets()
+    {
+        return $this->hasMany(SupportTicket::class);
+    }
+
+    public function notifications()
+    {
+        return $this->hasMany(AdminNotification::class);
     }
 
     /**

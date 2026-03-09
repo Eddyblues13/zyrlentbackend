@@ -105,6 +105,28 @@ class KoraPayController extends Controller
                     'description' => 'Wallet successfully funded via Korapay'
                 ]);
 
+                // ── Referral qualification check ──
+                if ($transaction->amount >= 10000 && $user->referred_by) {
+                    $referral = \App\Models\Referral::where('referred_id', $user->id)
+                        ->where('status', 'pending')
+                        ->first();
+
+                    if ($referral) {
+                        $referral->update([
+                            'status' => 'credited',
+                            'credited_at' => now(),
+                        ]);
+
+                        // Credit the referrer's wallet with ₦2,000 referral bonus
+                        $referrerWallet = $referral->referrer->wallet()
+                            ->firstOrCreate(['user_id' => $referral->referrer_id]);
+                        $referrerWallet->creditReferralBonus(
+                            2000,
+                            'Referral bonus: ' . $user->name . ' funded their wallet'
+                        );
+                    }
+                }
+
                 return response()->json([
                     'success' => true, 
                     'message' => 'Wallet funded successfully',

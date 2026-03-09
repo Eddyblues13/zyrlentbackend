@@ -6,11 +6,12 @@ use Illuminate\Database\Eloquent\Model;
 
 class Service extends Model
 {
-    protected $fillable = ['name', 'icon', 'color', 'category', 'cost', 'is_active'];
+    protected $fillable = ['name', 'icon', 'color', 'category', 'cost', 'is_active', 'sort_order'];
 
     protected $casts = [
-        'cost' => 'decimal:2',
-        'is_active' => 'boolean',
+        'cost'       => 'decimal:2',
+        'is_active'  => 'boolean',
+        'sort_order' => 'integer',
     ];
 
     public function orders()
