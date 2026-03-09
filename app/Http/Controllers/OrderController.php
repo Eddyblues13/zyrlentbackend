@@ -123,13 +123,17 @@ class OrderController extends Controller
 
             $phoneNumber = $availableNumbers[0]->phoneNumber;
 
-            // Buy the number and attach SMS webhook
-            $webhookUrl = rtrim(env('APP_URL'), '/') . '/api/webhook/sms';
-            $purchased  = $twilio->incomingPhoneNumbers->create([
-                'phoneNumber' => $phoneNumber,
-                'smsUrl'      => $webhookUrl,
-                'smsMethod'   => 'POST',
-            ]);
+            // Buy the number and attach SMS webhook (only if URL is a public domain)
+            $webhookUrl = env('TWILIO_WEBHOOK_URL', rtrim(env('APP_URL'), '/') . '/api/webhook/sms');
+            $createParams = ['phoneNumber' => $phoneNumber];
+
+            // Twilio rejects localhost/127.0.0.1 webhook URLs — only attach if public
+            if ($webhookUrl && !preg_match('/(localhost|127\.0\.0\.\d+)/i', $webhookUrl)) {
+                $createParams['smsUrl']    = $webhookUrl;
+                $createParams['smsMethod'] = 'POST';
+            }
+
+            $purchased = $twilio->incomingPhoneNumbers->create($createParams);
 
             $twilioNumSid = $purchased->sid;
 
