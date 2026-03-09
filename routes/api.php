@@ -20,6 +20,7 @@ use App\Http\Controllers\Admin\ApiSettingsController;
 use App\Http\Controllers\Admin\SupportTicketController;
 use App\Http\Controllers\Admin\NotificationController;
 use App\Http\Controllers\Admin\ReferralManagerController;
+use App\Http\Controllers\Admin\AdminProfileController;
 use Illuminate\Support\Facades\Route;
 
 // ─── Public (no auth) ───────────────────────────────────────
@@ -149,4 +150,9 @@ Route::prefix('admin')->middleware('auth:sanctum')->group(function () {
     // API Settings
     Route::get('/settings', [ApiSettingsController::class, 'index']);
     Route::put('/settings', [ApiSettingsController::class, 'update']);
+
+    // Admin Profile
+    Route::get('/profile', [AdminProfileController::class, 'show']);
+    Route::put('/profile', [AdminProfileController::class, 'update']);
+    Route::put('/profile/password', [AdminProfileController::class, 'updatePassword']);
 });
