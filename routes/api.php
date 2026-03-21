@@ -21,6 +21,8 @@ use App\Http\Controllers\Admin\SupportTicketController;
 use App\Http\Controllers\Admin\NotificationController;
 use App\Http\Controllers\Admin\ReferralManagerController;
 use App\Http\Controllers\Admin\AdminProfileController;
+use App\Http\Controllers\Admin\ProviderFetchController;
+use App\Http\Controllers\Admin\NumberInventoryController;
 use Illuminate\Support\Facades\Route;
 
 // ─── Public (no auth) ───────────────────────────────────────
@@ -31,8 +33,9 @@ Route::post('/resend-verification', [AuthController::class, 'resendVerificationC
 Route::post('/forgot-password', [AuthController::class, 'forgotPassword'])->name('password.email');
 Route::get('/reset-password/{token}', [AuthController::class, 'showResetForm'])->name('password.reset');
 Route::post('/reset-password', [AuthController::class, 'resetPassword'])->name('password.update');
-// ─── Twilio SMS Webhook (no auth — Twilio posts here) ────────
+// ─── SMS Webhooks (no auth — providers POST here) ────────
 Route::post('/webhook/sms', [WebhookController::class, 'sms']);
+Route::post('/webhook/telnyx', [WebhookController::class, 'telnyxSms']);
 
 // ─── Authenticated User Routes ───────────────────────────────
 Route::middleware('auth:sanctum')->group(function () {
@@ -75,8 +78,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Notifications (user-facing)
     Route::get('/notifications', [NotificationUserController::class, 'index']);
-    Route::get('/notifications/unread-count', [NotificationUserController::class, 'unreadCount']);
-    Route::post('/notifications/{notification}/read', [NotificationUserController::class, 'markRead']);
+    Route::get("/notifications/count", [NotificationUserController::class, "count"]);
 });
 
 // ═══════════════════════════════════════════════════════════════
@@ -106,15 +108,16 @@ Route::prefix('admin')->middleware('auth:sanctum')->group(function () {
 
     // Country Management
     Route::get('/countries', [CountryManagerController::class, 'index']);
-    Route::post('/countries', [CountryManagerController::class, 'store']);
+    // Countries are now added via API providers only (POST /admin/provider/import-countries)
     Route::put('/countries/{country}', [CountryManagerController::class, 'update']);
     Route::post('/countries/{country}/toggle', [CountryManagerController::class, 'toggleActive']);
     Route::delete('/countries/{country}', [CountryManagerController::class, 'destroy']);
-    Route::get('/countries/suggestions', [CountryManagerController::class, 'fetchSuggestions']);
-    Route::post('/countries/import', [CountryManagerController::class, 'import']);
+    
+    
 
     // User Management
     Route::get('/users', [UserManagerController::class, 'index']);
+    Route::get('/users-stats', [UserManagerController::class, 'stats']);
     Route::get('/users/{user}', [UserManagerController::class, 'show']);
     Route::post('/users/{user}/credit', [UserManagerController::class, 'creditWallet']);
     Route::post('/users/{user}/debit', [UserManagerController::class, 'debitWallet']);
@@ -122,10 +125,20 @@ Route::prefix('admin')->middleware('auth:sanctum')->group(function () {
     Route::post('/users/{user}/email', [UserManagerController::class, 'sendEmail']);
     Route::post('/users/{user}/notify', [UserManagerController::class, 'sendNotification']);
     Route::post('/users/{user}/login-as', [UserManagerController::class, 'loginAsUser']);
+    Route::post('/users/{user}/reset-password', [UserManagerController::class, 'resetPassword']);
+    Route::get('/users/{user}/login-history', [UserManagerController::class, 'loginHistory']);
+    Route::get('/users/{user}/ip-logs', [UserManagerController::class, 'ipLogs']);
+    Route::get('/users/{user}/activation-history', [UserManagerController::class, 'activationHistory']);
+    Route::post('/users/{user}/toggle-reseller', [UserManagerController::class, 'toggleReseller']);
 
     // Order Management
     Route::get('/orders', [OrderManagerController::class, 'index']);
     Route::get('/orders/{order}', [OrderManagerController::class, 'show']);
+    Route::get('/orders-stats', [OrderManagerController::class, 'stats']);
+    Route::post('/orders/{order}/cancel', [OrderManagerController::class, 'cancel']);
+    Route::post('/orders/{order}/force-complete', [OrderManagerController::class, 'forceComplete']);
+    Route::post('/orders/{order}/refund', [OrderManagerController::class, 'refund']);
+    Route::post('/orders/{order}/resend-sms', [OrderManagerController::class, 'resendSms']);
 
     // Fund Requests (wallet management)
     Route::get('/funds/pending', [WalletManagerController::class, 'pendingFunds']);
@@ -142,17 +155,58 @@ Route::prefix('admin')->middleware('auth:sanctum')->group(function () {
     Route::get('/notifications', [NotificationController::class, 'index']);
     Route::post('/notifications/broadcast', [NotificationController::class, 'broadcast']);
     Route::post('/notifications/email-blast', [NotificationController::class, 'emailBlast']);
+    Route::put("/notifications/{notification}", [NotificationController::class, "update"]);
+    Route::delete("/notifications/{notification}", [NotificationController::class, "destroy"]);
+    Route::post("/notifications/{notification}/toggle-active", [NotificationController::class, "toggleActive"]);
 
     // Referral Management
     Route::get('/referrals', [ReferralManagerController::class, 'index']);
     Route::get('/referrals/stats', [ReferralManagerController::class, 'stats']);
 
-    // API Settings
+    // API Settings & Pricing
     Route::get('/settings', [ApiSettingsController::class, 'index']);
     Route::put('/settings', [ApiSettingsController::class, 'update']);
+    Route::get("/settings/pricing-config", [ApiSettingsController::class, "pricingConfig"]);
+    Route::put("/settings/pricing", [ApiSettingsController::class, "updatePricing"]);
+
+    // Provider Management (multi-provider CRUD)
+    Route::get("/providers", [ApiSettingsController::class, "providers"]);
+    Route::get("/providers/types", [ApiSettingsController::class, "availableTypes"]);
+    Route::get("/providers/fields/{type}", [ApiSettingsController::class, "providerFields"]);
+    Route::post("/providers", [ApiSettingsController::class, "storeProvider"]);
+    Route::put("/providers/{provider}", [ApiSettingsController::class, "updateProvider"]);
+    Route::delete("/providers/{provider}", [ApiSettingsController::class, "destroyProvider"]);
+    Route::post("/providers/{provider}/toggle", [ApiSettingsController::class, "toggleProvider"]);
+    Route::post("/providers/{provider}/reset-metrics", [ApiSettingsController::class, "resetProviderMetrics"]);
+
+    // Routing Config (smart routing)
+    Route::get("/routing", [ApiSettingsController::class, "routingConfig"]);
+    Route::put("/routing", [ApiSettingsController::class, "updateRouting"]);
+    Route::put("/routing/priorities", [ApiSettingsController::class, "updatePriorities"]);
 
     // Admin Profile
     Route::get('/profile', [AdminProfileController::class, 'show']);
     Route::put('/profile', [AdminProfileController::class, 'update']);
     Route::put('/profile/password', [AdminProfileController::class, 'updatePassword']);
+
+
+    // Provider Fetch (real-time API)
+    Route::get("/provider/list", [ProviderFetchController::class, "providers"]);
+    Route::post("/provider/fetch-countries", [ProviderFetchController::class, "fetchCountries"]);
+    Route::post("/provider/fetch-numbers", [ProviderFetchController::class, "fetchNumbers"]);
+    Route::post("/provider/fetch-pricing", [ProviderFetchController::class, "fetchPricing"]);
+    Route::post("/provider/import-countries", [ProviderFetchController::class, "importCountries"]);
+    Route::post("/provider/import-numbers", [ProviderFetchController::class, "importNumbers"]);
+    // Number Inventory Management
+    Route::get("/numbers", [NumberInventoryController::class, "index"]);
+    Route::get("/numbers/stats", [NumberInventoryController::class, "stats"]);
+    Route::get("/numbers/filter-options", [NumberInventoryController::class, "filterOptions"]);
+    // Numbers are now added via API providers only (POST /admin/provider/import-numbers)
+    
+    Route::put("/numbers/{phoneNumber}", [NumberInventoryController::class, "update"]);
+    Route::delete("/numbers/{phoneNumber}", [NumberInventoryController::class, "destroy"]);
+    Route::post("/numbers/bulk-delete", [NumberInventoryController::class, "bulkDestroy"]);
+    Route::post("/numbers/bulk-status", [NumberInventoryController::class, "bulkUpdateStatus"]);
+    Route::post("/numbers/bulk-assign-services", [NumberInventoryController::class, "bulkAssignServices"]);
+    Route::post("/numbers/bulk-set-price", [NumberInventoryController::class, "bulkSetPrice"]);
 });

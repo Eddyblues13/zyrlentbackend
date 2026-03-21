@@ -6,10 +6,10 @@ use App\Models\ApiSetting;
 use App\Models\Country;
 use App\Models\NumberOrder;
 use App\Models\Service;
+use App\Services\ProviderRouter;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
-use Twilio\Rest\Client as TwilioClient;
 
 class OrderController extends Controller
 {
@@ -25,9 +25,9 @@ class OrderController extends Controller
         if ($search = $request->get('search')) {
             $query->where(function ($q) use ($search) {
                 $q->where('order_ref', 'like', "%{$search}%")
-                  ->orWhere('phone_number', 'like', "%{$search}%")
-                  ->orWhereHas('service', fn($q2) => $q2->where('name', 'like', "%{$search}%"))
-                  ->orWhereHas('country', fn($q2) => $q2->where('name', 'like', "%{$search}%"));
+                    ->orWhere('phone_number', 'like', "%{$search}%")
+                    ->orWhereHas('service', fn($q2) => $q2->where('name', 'like', "%{$search}%"))
+                    ->orWhereHas('country', fn($q2) => $q2->where('name', 'like', "%{$search}%"));
             });
         }
 
@@ -41,14 +41,18 @@ class OrderController extends Controller
     }
 
     /**
-     * Create a new number order — provisions a Twilio phone number.
+     * Create a new number order — smart-routes through available providers.
      *
      * Security:
      *  - Rate limited: max 3 orders per user per minute
      *  - Minimum wallet balance enforced
      *  - Atomic: wallet deduct + order create in DB::transaction
-     *  - Twilio purchased BEFORE wallet deduction
-     *  - Auto-rollback: release Twilio number if DB fails
+     *  - Number provisioned BEFORE wallet deduction
+     *  - Auto-rollback: release number if DB fails
+     *
+     * Routing:
+     *  The ProviderRouter handles provider selection, failover, and metrics.
+     *  Users never see which provider was used — they only see the number.
      */
     public function store(Request $request)
     {
@@ -87,75 +91,41 @@ class OrderController extends Controller
             ['balance' => 0.00]
         );
 
-        if ($wallet->balance < $cost) {
+        if ($wallet->total_balance < $cost) {
             return response()->json([
-                'message' => 'Insufficient wallet balance. Please fund your wallet to continue.',
+                'message'  => 'Insufficient wallet balance. Please fund your wallet to continue.',
                 'required' => $cost,
-                'balance'  => $wallet->balance,
+                'balance'  => $wallet->total_balance,
             ], 422);
         }
 
-        // ─── Get Twilio credentials (from admin settings → fallback to .env) ───
-        $twilioSid   = ApiSetting::getValue('twilio_account_sid', env('TWILIO_ACCOUNT_SID'));
-        $twilioToken = ApiSetting::getValue('twilio_auth_token', env('TWILIO_AUTH_TOKEN'));
-
-        if (!$twilioSid || !$twilioToken) {
-            return response()->json([
-                'message' => 'SMS service is not configured. Please contact support.',
-            ], 503);
-        }
-
-        // ─── 1. Provision number via Twilio (BEFORE wallet deduction) ───
-        $phoneNumber  = null;
-        $twilioNumSid = null;
+        // ─── 1. Provision number via Smart Router (BEFORE wallet deduction) ───
+        $router = new ProviderRouter();
 
         try {
-            $twilio = new TwilioClient($twilioSid, $twilioToken);
-
-            $availableNumbers = $twilio->availablePhoneNumbers($country->twilio_code)
-                ->local->read(['smsEnabled' => true], 1);
-
-            if (empty($availableNumbers)) {
-                return response()->json([
-                    'message' => 'No numbers available for the selected country right now. Please try again later.',
-                ], 422);
-            }
-
-            $phoneNumber = $availableNumbers[0]->phoneNumber;
-
-            // Buy the number and attach SMS webhook (only if URL is a public domain)
-            $webhookUrl = env('TWILIO_WEBHOOK_URL', rtrim(env('APP_URL'), '/') . '/api/webhook/sms');
-            $createParams = ['phoneNumber' => $phoneNumber];
-
-            // Twilio rejects localhost/127.0.0.1 webhook URLs — only attach if public
-            if ($webhookUrl && !preg_match('/(localhost|127\.0\.0\.\d+)/i', $webhookUrl)) {
-                $createParams['smsUrl']    = $webhookUrl;
-                $createParams['smsMethod'] = 'POST';
-            }
-
-            $purchased = $twilio->incomingPhoneNumbers->create($createParams);
-
-            $twilioNumSid = $purchased->sid;
-
+            $allocation = $router->allocateNumber($country, $service->slug ?? null);
         } catch (\Exception $e) {
-            \Log::error('Twilio provisioning error: ' . $e->getMessage(), [
+            \Log::error('ProviderRouter allocation failed', [
                 'user_id'    => $user->id,
                 'service_id' => $service->id,
                 'country_id' => $country->id,
                 'ip'         => $request->ip(),
+                'error'      => $e->getMessage(),
             ]);
             return response()->json([
-                'message' => 'Failed to provision a number. Please try again.',
+                'message' => $e->getMessage(),
             ], 502);
         }
 
         // ─── 2. Atomic: deduct wallet + create order ───
         try {
-            $order = DB::transaction(function () use ($user, $wallet, $cost, $service, $country, $phoneNumber, $twilioNumSid, $request) {
+            $order = DB::transaction(function () use (
+                $user, $wallet, $cost, $service, $country,
+                $allocation, $request
+            ) {
                 // Re-check balance inside transaction (prevents race condition)
                 $freshWallet = $user->wallet()->lockForUpdate()->first();
-
-                if ($freshWallet->balance < $cost) {
+                if ($freshWallet->total_balance < $cost) {
                     throw new \Exception('Insufficient wallet balance.');
                 }
 
@@ -165,31 +135,40 @@ class OrderController extends Controller
                     'country_id' => $country->id,
                 ]);
 
-                // Create order
+                // Create order with provider tracking
                 $order = NumberOrder::create([
-                    'user_id'      => $user->id,
-                    'service_id'   => $service->id,
-                    'country_id'   => $country->id,
-                    'order_ref'    => 'ORD-' . strtoupper(Str::random(8)),
-                    'phone_number' => $phoneNumber,
-                    'twilio_sid'   => $twilioNumSid,
-                    'status'       => 'pending',
-                    'cost'         => $cost,
-                    'expires_at'   => now()->addMinutes((int) env('NUMBER_EXPIRY_MINUTES', 5)),
-                    'ip_address'   => $request->ip(),
-                    'user_agent'   => $request->userAgent(),
+                    'user_id'              => $user->id,
+                    'service_id'           => $service->id,
+                    'country_id'           => $country->id,
+                    'order_ref'            => 'ORD-' . strtoupper(Str::random(8)),
+                    'phone_number'         => $allocation['phone_number'],
+                    'twilio_sid'           => $allocation['provider_sid'],  // kept for backward compat
+                    'status'               => 'pending',
+                    'cost'                 => $cost,
+                    'expires_at'           => now()->addMinutes((int) env('NUMBER_EXPIRY_MINUTES', 5)),
+                    'ip_address'           => $request->ip(),
+                    'user_agent'           => $request->userAgent(),
+                    // Provider routing metadata
+                    'provider_id'          => $allocation['provider_id'],
+                    'provider_slug'        => $allocation['provider_slug'],
+                    'provider_response_ms' => $allocation['response_ms'],
+                    'retry_count'          => $allocation['retry_count'],
+                    'routing_log'          => $allocation['routing_log'],
                 ]);
 
                 return $order;
             });
         } catch (\Exception $e) {
-            // Rollback: release Twilio number since DB transaction failed
+            // Rollback: release the provisioned number since DB transaction failed
             try {
-                $twilio = new TwilioClient($twilioSid, $twilioToken);
-                $twilio->incomingPhoneNumbers($twilioNumSid)->delete();
-                \Log::info("Released Twilio number {$phoneNumber} after DB failure.");
+                $router->releaseNumber(
+                    $allocation['provider_sid'],
+                    $allocation['provider_id'],
+                    $allocation['provider_slug']
+                );
+                \Log::info("Released number {$allocation['phone_number']} after DB failure.");
             } catch (\Exception $releaseEx) {
-                \Log::error("Failed to release Twilio number {$phoneNumber}: " . $releaseEx->getMessage());
+                \Log::error("Failed to release number {$allocation['phone_number']}: " . $releaseEx->getMessage());
             }
 
             return response()->json(['message' => $e->getMessage()], 422);
@@ -198,9 +177,9 @@ class OrderController extends Controller
         $order->load(['service:id,name,color,icon', 'country:id,name,flag,dial_code']);
 
         return response()->json([
-            'message' => 'Number successfully provisioned. Waiting for OTP…',
-            'order'   => $order,
-            'wallet_balance' => $wallet->fresh()->balance,
+            'message'        => 'Number successfully provisioned. Waiting for OTP…',
+            'order'          => $order,
+            'wallet_balance' => $wallet->fresh()->total_balance,
         ], 201);
     }
 
@@ -217,6 +196,7 @@ class OrderController extends Controller
         if ($order->status === 'pending' && $order->isExpired()) {
             $order->update(['status' => 'expired']);
             $this->releaseNumber($order);
+            $this->releaseInternalNumber($order);
             $this->refundOrder($order, $request->user());
         }
 
@@ -226,7 +206,7 @@ class OrderController extends Controller
     }
 
     /**
-     * Cancel a pending order — refunds wallet and releases Twilio number.
+     * Cancel a pending order — refunds wallet and releases number.
      */
     public function cancel(Request $request, NumberOrder $order)
     {
@@ -239,6 +219,7 @@ class OrderController extends Controller
         }
 
         $this->releaseNumber($order);
+        $this->releaseInternalNumber($order);
 
         // Refund wallet
         $this->refundOrder($order, $request->user());
@@ -246,28 +227,30 @@ class OrderController extends Controller
         $order->update(['status' => 'cancelled']);
 
         return response()->json([
-            'message' => 'Order cancelled and wallet refunded.',
-            'wallet_balance' => $request->user()->wallet?->fresh()?->balance,
+            'message'        => 'Order cancelled and wallet refunded.',
+            'wallet_balance' => $request->user()->wallet?->fresh()?->total_balance,
         ]);
     }
 
-    // ─── Helpers ──────────────────────────────────────────────
+    // ─── Helpers ────────────────────────────────────────────────────
 
     /**
-     * Release a Twilio number.
+     * Release a number back to its provider using the smart router.
      */
     private function releaseNumber(NumberOrder $order): void
     {
         if (!$order->twilio_sid) return;
 
         try {
-            $sid   = ApiSetting::getValue('twilio_account_sid', env('TWILIO_ACCOUNT_SID'));
-            $token = ApiSetting::getValue('twilio_auth_token', env('TWILIO_AUTH_TOKEN'));
-            $twilio = new TwilioClient($sid, $token);
-            $twilio->incomingPhoneNumbers($order->twilio_sid)->delete();
-            \Log::info("Released Twilio number {$order->phone_number} (order #{$order->id})");
+            $router = new ProviderRouter();
+            $router->releaseNumber(
+                $order->twilio_sid,
+                $order->provider_id,
+                $order->provider_slug
+            );
+            \Log::info("Released number {$order->phone_number} (order #{$order->id}) via provider {$order->provider_slug}");
         } catch (\Exception $e) {
-            \Log::warning("Twilio release error for order #{$order->id}: " . $e->getMessage());
+            \Log::warning("Release error for order #{$order->id}: " . $e->getMessage());
         }
     }
 
@@ -281,6 +264,23 @@ class OrderController extends Controller
             $wallet->credit((float) $order->cost, "Refund: {$order->order_ref}", [
                 'order_id' => $order->id,
             ]);
+        }
+    }
+
+    /**
+     * Release an internal pool number back to 'available' status.
+     */
+    private function releaseInternalNumber(NumberOrder $order): void
+    {
+        if ($order->provider_slug !== 'internal') return;
+
+        $phoneNumber = \App\Models\PhoneNumber::where('phone_number', $order->phone_number)
+            ->where('status', 'in_use')
+            ->first();
+
+        if ($phoneNumber) {
+            $phoneNumber->release();
+            \Log::info("Internal pool number {$order->phone_number} released back to pool (order #{$order->id}).");
         }
     }
 }

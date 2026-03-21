@@ -18,4 +18,12 @@ class Service extends Model
     {
         return $this->hasMany(NumberOrder::class);
     }
+
+    /**
+     * Generate a slug from the service name (used by ProviderRouter for internal pool matching).
+     */
+    public function getSlugAttribute(): string
+    {
+        return \Illuminate\Support\Str::slug($this->name);
+    }
 }

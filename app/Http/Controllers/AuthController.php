@@ -13,6 +13,7 @@ use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Password;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use App\Models\LoginHistory;
 
 class AuthController extends Controller
 {
@@ -149,6 +150,10 @@ class AuthController extends Controller
         $user = User::where('email', $request->email)->first();
 
         if (!$user || !Hash::check($request->password, $user->password)) {
+            // Record failed login attempt
+            if ($user) {
+                $this->recordLoginHistory($user, $request, 'failed');
+            }
             throw ValidationException::withMessages([
                 'email' => ['The provided credentials are incorrect.'],
             ]);
@@ -165,6 +170,12 @@ class AuthController extends Controller
                 'email' => $user->email,
             ], 403);
         }
+
+        // Record login history
+        $this->recordLoginHistory($user, $request, 'success');
+
+        // Update last active
+        $user->update(['last_active_at' => now()]);
 
         $token = $user->createToken('auth_token')->plainTextToken;
 
@@ -261,6 +272,52 @@ class AuthController extends Controller
         $user->update(['password' => Hash::make($request->password)]);
 
         return response()->json(['message' => 'Password changed successfully.']);
+    }
+
+    /**
+     * Record a login history entry.
+     */
+    private function recordLoginHistory(User $user, Request $request, string $status): void
+    {
+        $userAgent = $request->userAgent();
+
+        LoginHistory::create([
+            'user_id'    => $user->id,
+            'ip_address' => $request->ip(),
+            'user_agent' => $userAgent,
+            'device'     => $this->parseDevice($userAgent),
+            'browser'    => $this->parseBrowser($userAgent),
+            'platform'   => $this->parsePlatform($userAgent),
+            'location'   => null, // Can integrate IP geolocation later
+            'status'     => $status,
+        ]);
+    }
+
+    private function parseDevice(string $ua): string
+    {
+        if (preg_match('/Mobile|Android|iPhone|iPad/i', $ua)) return 'Mobile';
+        if (preg_match('/Tablet|iPad/i', $ua)) return 'Tablet';
+        return 'Desktop';
+    }
+
+    private function parseBrowser(string $ua): string
+    {
+        if (preg_match('/Chrome\/([\d.]+)/i', $ua)) return 'Chrome';
+        if (preg_match('/Firefox\/([\d.]+)/i', $ua)) return 'Firefox';
+        if (preg_match('/Safari\/([\d.]+)/i', $ua) && !preg_match('/Chrome/i', $ua)) return 'Safari';
+        if (preg_match('/Edge\/([\d.]+)/i', $ua)) return 'Edge';
+        if (preg_match('/Opera|OPR/i', $ua)) return 'Opera';
+        return 'Unknown';
+    }
+
+    private function parsePlatform(string $ua): string
+    {
+        if (preg_match('/Windows/i', $ua)) return 'Windows';
+        if (preg_match('/Macintosh|Mac OS/i', $ua)) return 'macOS';
+        if (preg_match('/Linux/i', $ua) && !preg_match('/Android/i', $ua)) return 'Linux';
+        if (preg_match('/Android/i', $ua)) return 'Android';
+        if (preg_match('/iPhone|iPad|iPod/i', $ua)) return 'iOS';
+        return 'Unknown';
     }
 
     /**

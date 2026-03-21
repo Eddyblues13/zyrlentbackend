@@ -11,19 +11,25 @@ class DashboardController extends Controller
     public function index(Request $request)
     {
         $user = $request->user();
-        
+
         // Ensure wallet exists, create if not
         $wallet = $user->wallet()->firstOrCreate(['user_id' => $user->id], ['balance' => 0.00]);
 
         $orders = $user->orders();
+        $transactions = $user->transactions();
 
         return response()->json([
-            'wallet_balance' => $wallet->balance,
+            'user' => [
+                'id'    => $user->id,
+                'name'  => $user->name,
+                'email' => $user->email,
+            ],
+            'wallet_balance' => $wallet->total_balance,
             'stats' => [
-                'transactions' => $orders->count(), // simplified assumption for transactions
-                'verifications' => $orders->where('status', 'completed')->count(),
-                'total_spent' => $orders->sum('cost'),
-                'pending_sms' => $orders->where('status', 'pending')->count(),
+                'transactions'  => $transactions->count(),
+                'verifications' => $orders->clone()->where('status', 'completed')->count(),
+                'total_spent'   => (float) $orders->clone()->whereIn('status', ['completed', 'pending'])->sum('cost'),
+                'pending_sms'   => $orders->clone()->where('status', 'pending')->count(),
             ]
         ]);
     }

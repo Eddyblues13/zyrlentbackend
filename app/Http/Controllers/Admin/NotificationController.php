@@ -10,9 +10,6 @@ use Illuminate\Support\Facades\Mail;
 
 class NotificationController extends Controller
 {
-    /**
-     * List all sent notifications — paginated.
-     */
     public function index(Request $request)
     {
         $query = AdminNotification::with('user:id,name,email');
@@ -22,37 +19,82 @@ class NotificationController extends Controller
         }
 
         $notifications = $query->latest()->paginate($request->input('per_page', 15));
-
         return response()->json($notifications);
     }
 
-    /**
-     * Broadcast notification to all users.
-     */
     public function broadcast(Request $request)
     {
-        $request->validate([
-            'title'   => 'required|string|max:255',
-            'message' => 'required|string|max:2000',
-            'type'    => 'nullable|in:info,warning,promo,system',
+        $data = $request->validate([
+            'title'      => 'required|string|max:255',
+            'message'    => 'required|string|max:2000',
+            'type'       => 'nullable|in:info,warning,promo,system',
+            'link_url'   => 'nullable|string|max:500',
+            'link_label' => 'nullable|string|max:100',
         ]);
 
-        AdminNotification::create([
-            'title'        => $request->title,
-            'message'      => $request->message,
-            'type'         => $request->type ?? 'info',
+        $notification = AdminNotification::create([
+            'title'        => $data['title'],
+            'message'      => $data['message'],
+            'type'         => $data['type'] ?? 'info',
+            'link_url'     => !empty($data['link_url']) ? $data['link_url'] : null,
+            'link_label'   => !empty($data['link_label']) ? $data['link_label'] : null,
             'is_broadcast' => true,
+            'is_active'    => true,
             'user_id'      => null,
         ]);
 
         return response()->json([
-            'message' => 'Broadcast notification sent to all users.',
+            'message'      => 'Broadcast notification sent to all users.',
+            'notification' => $notification,
         ]);
     }
 
-    /**
-     * Send email blast to all users.
-     */
+    public function update(Request $request, AdminNotification $notification)
+    {
+        $data = $request->validate([
+            'title'      => 'sometimes|required|string|max:255',
+            'message'    => 'sometimes|required|string|max:2000',
+            'type'       => 'sometimes|in:info,warning,promo,system',
+            'link_url'   => 'nullable|string|max:500',
+            'link_label' => 'nullable|string|max:100',
+            'is_active'  => 'sometimes|boolean',
+        ]);
+
+        // Normalize empties to null
+        if (array_key_exists('link_url', $data) && empty($data['link_url'])) {
+            $data['link_url'] = null;
+        }
+        if (array_key_exists('link_label', $data) && empty($data['link_label'])) {
+            $data['link_label'] = null;
+        }
+
+        $notification->update($data);
+
+        return response()->json([
+            'message'      => 'Notification updated.',
+            'notification' => $notification->fresh(),
+        ]);
+    }
+
+    public function destroy(AdminNotification $notification)
+    {
+        $notification->delete();
+
+        return response()->json([
+            'message' => 'Notification deleted.',
+        ]);
+    }
+
+    public function toggleActive(AdminNotification $notification)
+    {
+        $notification->update(['is_active' => !$notification->is_active]);
+
+        return response()->json([
+            'message'      => $notification->is_active ? 'Notification activated.' : 'Notification deactivated.',
+            'notification' => $notification,
+        ]);
+    }
+
     public function emailBlast(Request $request)
     {
         $request->validate([

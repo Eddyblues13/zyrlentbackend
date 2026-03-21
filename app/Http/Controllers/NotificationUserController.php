@@ -8,7 +8,7 @@ use Illuminate\Http\Request;
 class NotificationUserController extends Controller
 {
     /**
-     * List notifications for the authenticated user (individual + broadcasts).
+     * List active notifications for the authenticated user.
      */
     public function index(Request $request)
     {
@@ -20,28 +20,11 @@ class NotificationUserController extends Controller
     }
 
     /**
-     * Mark a notification as read.
+     * Count of active notifications.
      */
-    public function markRead(Request $request, AdminNotification $notification)
+    public function count(Request $request)
     {
-        // User can only mark their own or broadcast notifications
-        if (!$notification->is_broadcast && $notification->user_id !== $request->user()->id) {
-            return response()->json(['message' => 'Not found.'], 404);
-        }
-
-        $notification->update(['is_read' => true]);
-
-        return response()->json(['message' => 'Marked as read.']);
-    }
-
-    /**
-     * Unread count.
-     */
-    public function unreadCount(Request $request)
-    {
-        $count = AdminNotification::forUser($request->user()->id)
-            ->where('is_read', false)
-            ->count();
+        $count = AdminNotification::forUser($request->user()->id)->count();
 
         return response()->json(['count' => $count]);
     }

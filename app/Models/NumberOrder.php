@@ -11,12 +11,18 @@ class NumberOrder extends Model
         'order_ref', 'phone_number', 'twilio_sid',
         'otp_code', 'sms_from', 'status', 'cost',
         'expires_at', 'ip_address', 'user_agent', 'completed_at',
+        // Provider routing fields
+        'provider_id', 'provider_slug', 'provider_response_ms',
+        'retry_count', 'routing_log',
     ];
 
     protected $casts = [
-        'cost' => 'decimal:2',
-        'expires_at' => 'datetime',
-        'completed_at' => 'datetime',
+        'cost'                => 'decimal:2',
+        'expires_at'          => 'datetime',
+        'completed_at'        => 'datetime',
+        'routing_log'         => 'array',
+        'provider_response_ms' => 'integer',
+        'retry_count'         => 'integer',
     ];
 
     public function user()
@@ -32,6 +38,11 @@ class NumberOrder extends Model
     public function country()
     {
         return $this->belongsTo(Country::class);
+    }
+
+    public function provider()
+    {
+        return $this->belongsTo(ApiProvider::class, 'provider_id');
     }
 
     public function isExpired(): bool
