@@ -44,9 +44,13 @@ class CountryController extends Controller
         }
         $query->orderBy('name');
 
+        // Countries that should always be marked as "Popular"
+        $popularCodes = ['US', 'GB', 'CA'];
+
         $countries = $query->get()->map(function ($country, $index) use (
             $hasOrdersTable, $hasPriceCol, $hasAvailableCol,
-            $hasSuccessRate, $hasFlag, $hasCode, $hasDialCode, $hasTwilioCode, $hasPriceUsd
+            $hasSuccessRate, $hasFlag, $hasCode, $hasDialCode, $hasTwilioCode, $hasPriceUsd,
+            $popularCodes
         ) {
             $available = $hasAvailableCol ? (int) ($country->available_numbers ?? 200) : 200;
 
@@ -57,10 +61,12 @@ class CountryController extends Controller
                 $price = round((float) $country->price_usd * 1600, 0);
             }
 
+            $countryCode = $hasCode ? $country->code : null;
+
             return [
                 'id'                => $country->id,
                 'name'              => $country->name,
-                'code'              => $hasCode      ? $country->code       : null,
+                'code'              => $countryCode,
                 'flag'              => $hasFlag      ? $country->flag       : '🌍',
                 'dial_code'         => $hasDialCode  ? $country->dial_code  : null,
                 'twilio_code'       => $hasTwilioCode ? $country->twilio_code : null,
@@ -70,7 +76,7 @@ class CountryController extends Controller
                 'is_low_stock'      => $available > 0 && $available <= 10,
                 'success_rate'      => $hasSuccessRate ? (float) ($country->success_rate ?? 95) : 95.0,
                 'order_count'       => $hasOrdersTable ? $country->orders_count : 0,
-                'is_most_used'      => $index < 3,
+                'is_most_used'      => in_array($countryCode, $popularCodes),
             ];
         });
 
