@@ -25,9 +25,9 @@ class OrderController extends Controller
         if ($search = $request->get('search')) {
             $query->where(function ($q) use ($search) {
                 $q->where('order_ref', 'like', "%{$search}%")
-                    ->orWhere('phone_number', 'like', "%{$search}%")
-                    ->orWhereHas('service', fn($q2) => $q2->where('name', 'like', "%{$search}%"))
-                    ->orWhereHas('country', fn($q2) => $q2->where('name', 'like', "%{$search}%"));
+                   ->orWhere('phone_number', 'like', "%{$search}%")
+                   ->orWhereHas('service', fn($q2) => $q2->where('name', 'like', "%{$search}%"))
+                   ->orWhereHas('country', fn($q2) => $q2->where('name', 'like', "%{$search}%"));
             });
         }
 
@@ -41,18 +41,36 @@ class OrderController extends Controller
     }
 
     /**
+     * Calculate total price for a service+country combo.
+     * Used by the frontend confirm step before placing an order.
+     */
+    public function calculatePrice(Request $request)
+    {
+        $request->validate([
+            'service_id' => 'required|exists:services,id',
+            'country_id' => 'required|exists:countries,id',
+        ]);
+
+        $service = Service::findOrFail($request->service_id);
+        $country = Country::findOrFail($request->country_id);
+
+        $serviceCost  = (float) ($service->cost ?? 0);
+        $countryPrice = $this->resolveCountryPrice($country);
+        $total = $serviceCost + $countryPrice;
+
+        return response()->json([
+            'service_cost'  => $serviceCost,
+            'country_price' => $countryPrice,
+            'total'         => $total,
+            'currency'      => 'NGN',
+        ]);
+    }
+
+    /**
      * Create a new number order — smart-routes through available providers.
      *
-     * Security:
-     *  - Rate limited: max 3 orders per user per minute
-     *  - Minimum wallet balance enforced
-     *  - Atomic: wallet deduct + order create in DB::transaction
-     *  - Number provisioned BEFORE wallet deduction
-     *  - Auto-rollback: release number if DB fails
-     *
-     * Routing:
-     *  The ProviderRouter handles provider selection, failover, and metrics.
-     *  Users never see which provider was used — they only see the number.
+     * Pricing: Total cost = service price (NGN) + country price (NGN)
+     * Both are set by admin in Naira directly.
      */
     public function store(Request $request)
     {
@@ -64,9 +82,17 @@ class OrderController extends Controller
         $user    = $request->user();
         $service = Service::findOrFail($validated['service_id']);
         $country = Country::findOrFail($validated['country_id']);
-        $cost    = (float) $service->cost;
 
-        // ─── Rate Limiting: max 3 orders per user per minute ───
+        // --- Calculate total cost: service price + country price ---
+        $serviceCost = (float) $service->cost;
+        $countryPrice = $this->resolveCountryPrice($country);
+        $cost = $serviceCost + $countryPrice;
+
+        if ($cost <= 0) {
+            return response()->json(['message' => 'Pricing not configured for this combination. Please contact support.'], 422);
+        }
+
+        // --- Rate Limiting: max 3 orders per user per minute ---
         $recentOrders = NumberOrder::where('user_id', $user->id)
             ->where('created_at', '>=', now()->subMinute())
             ->count();
@@ -77,7 +103,7 @@ class OrderController extends Controller
             ], 429);
         }
 
-        // ─── Check service & country are active ───
+        // --- Check service & country are active ---
         if (!$service->is_active) {
             return response()->json(['message' => 'This service is currently unavailable.'], 422);
         }
@@ -85,7 +111,7 @@ class OrderController extends Controller
             return response()->json(['message' => 'This country is currently unavailable.'], 422);
         }
 
-        // ─── Load wallet and check balance ───
+        // --- Load wallet and check balance ---
         $wallet = $user->wallet()->firstOrCreate(
             ['user_id' => $user->id],
             ['balance' => 0.00]
@@ -99,7 +125,7 @@ class OrderController extends Controller
             ], 422);
         }
 
-        // ─── 1. Provision number via Smart Router (BEFORE wallet deduction) ───
+        // --- 1. Provision number via Smart Router (BEFORE wallet deduction) ---
         $router = new ProviderRouter();
 
         try {
@@ -117,7 +143,7 @@ class OrderController extends Controller
             ], 502);
         }
 
-        // ─── 2. Atomic: deduct wallet + create order ───
+        // --- 2. Atomic: deduct wallet + create order ---
         try {
             $order = DB::transaction(function () use (
                 $user, $wallet, $cost, $service, $country,
@@ -142,7 +168,7 @@ class OrderController extends Controller
                     'country_id'           => $country->id,
                     'order_ref'            => 'ORD-' . strtoupper(Str::random(8)),
                     'phone_number'         => $allocation['phone_number'],
-                    'twilio_sid'           => $allocation['provider_sid'],  // kept for backward compat
+                    'twilio_sid'           => $allocation['provider_sid'],
                     'status'               => 'pending',
                     'cost'                 => $cost,
                     'expires_at'           => now()->addMinutes((int) env('NUMBER_EXPIRY_MINUTES', 5)),
@@ -232,7 +258,23 @@ class OrderController extends Controller
         ]);
     }
 
-    // ─── Helpers ────────────────────────────────────────────────────
+    // --- Helpers ---
+
+    /**
+     * Resolve country price in NGN — uses direct price field, falls back to USD conversion.
+     */
+    private function resolveCountryPrice(Country $country): float
+    {
+        if ($country->price && (float) $country->price > 0) {
+            return (float) $country->price;
+        }
+        if ($country->price_usd && (float) $country->price_usd > 0) {
+            return round((float) $country->price_usd * 1600, 0);
+        }
+        return 0.0;
+    }
+
+
 
     /**
      * Release a number back to its provider using the smart router.

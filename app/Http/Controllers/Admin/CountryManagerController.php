@@ -39,12 +39,12 @@ class CountryManagerController extends Controller
             'flag'        => 'nullable|string',
             'dial_code'   => 'required|string',
             'twilio_code' => 'required|string|size:2',
-            'price_usd'   => 'required|numeric|min:0',
+            'price'       => 'required|numeric|min:0',
+            'price_usd'   => 'nullable|numeric|min:0',
             'is_active'   => 'boolean',
         ]);
 
         $validated['is_active'] = $validated['is_active'] ?? true;
-
         $country = Country::create($validated);
 
         return response()->json([
@@ -64,6 +64,7 @@ class CountryManagerController extends Controller
             'flag'        => 'nullable|string',
             'dial_code'   => 'sometimes|string',
             'twilio_code' => 'sometimes|string|size:2',
+            'price'       => 'sometimes|numeric|min:0',
             'price_usd'   => 'sometimes|numeric|min:0',
             'is_active'   => 'boolean',
         ]);
@@ -103,34 +104,64 @@ class CountryManagerController extends Controller
     }
 
     /**
+     * Bulk adjust all country prices by a percentage.
+     * positive = increase, negative = decrease
+     */
+    public function bulkAdjustPrices(Request $request)
+    {
+        $request->validate([
+            'percentage' => 'required|numeric|min:-90|max:1000',
+        ]);
+
+        $percent = (float) $request->percentage;
+        $multiplier = 1 + ($percent / 100);
+
+        $countries = Country::all();
+        $updated = 0;
+
+        foreach ($countries as $country) {
+            $oldPrice = (float) $country->price;
+            if ($oldPrice > 0) {
+                $country->price = round($oldPrice * $multiplier, 2);
+                $country->save();
+                $updated++;
+            }
+        }
+
+        return response()->json([
+            'message' => "Adjusted {$updated} country prices by {$percent}%.",
+            'updated' => $updated,
+        ]);
+    }
+
+    /**
      * Suggest common countries with Twilio support.
      */
     public function fetchSuggestions()
     {
         $suggestions = [
-            ['name' => 'United States',  'code' => 'US', 'flag' => '🇺🇸', 'dial_code' => '+1',   'twilio_code' => 'US', 'price_usd' => 1.00],
-            ['name' => 'United Kingdom', 'code' => 'GB', 'flag' => '🇬🇧', 'dial_code' => '+44',  'twilio_code' => 'GB', 'price_usd' => 1.50],
-            ['name' => 'Canada',         'code' => 'CA', 'flag' => '🇨🇦', 'dial_code' => '+1',   'twilio_code' => 'CA', 'price_usd' => 1.00],
-            ['name' => 'Germany',        'code' => 'DE', 'flag' => '🇩🇪', 'dial_code' => '+49',  'twilio_code' => 'DE', 'price_usd' => 2.00],
-            ['name' => 'France',         'code' => 'FR', 'flag' => '🇫🇷', 'dial_code' => '+33',  'twilio_code' => 'FR', 'price_usd' => 2.00],
-            ['name' => 'Netherlands',    'code' => 'NL', 'flag' => '🇳🇱', 'dial_code' => '+31',  'twilio_code' => 'NL', 'price_usd' => 2.00],
-            ['name' => 'Sweden',         'code' => 'SE', 'flag' => '🇸🇪', 'dial_code' => '+46',  'twilio_code' => 'SE', 'price_usd' => 2.00],
-            ['name' => 'Australia',      'code' => 'AU', 'flag' => '🇦🇺', 'dial_code' => '+61',  'twilio_code' => 'AU', 'price_usd' => 1.50],
-            ['name' => 'India',          'code' => 'IN', 'flag' => '🇮🇳', 'dial_code' => '+91',  'twilio_code' => 'IN', 'price_usd' => 0.50],
-            ['name' => 'Brazil',         'code' => 'BR', 'flag' => '🇧🇷', 'dial_code' => '+55',  'twilio_code' => 'BR', 'price_usd' => 1.50],
-            ['name' => 'Nigeria',        'code' => 'NG', 'flag' => '🇳🇬', 'dial_code' => '+234', 'twilio_code' => 'NG', 'price_usd' => 0.50],
-            ['name' => 'South Africa',   'code' => 'ZA', 'flag' => '🇿🇦', 'dial_code' => '+27',  'twilio_code' => 'ZA', 'price_usd' => 1.00],
-            ['name' => 'Japan',          'code' => 'JP', 'flag' => '🇯🇵', 'dial_code' => '+81',  'twilio_code' => 'JP', 'price_usd' => 3.00],
-            ['name' => 'South Korea',    'code' => 'KR', 'flag' => '🇰🇷', 'dial_code' => '+82',  'twilio_code' => 'KR', 'price_usd' => 3.00],
-            ['name' => 'Spain',          'code' => 'ES', 'flag' => '🇪🇸', 'dial_code' => '+34',  'twilio_code' => 'ES', 'price_usd' => 2.00],
-            ['name' => 'Italy',          'code' => 'IT', 'flag' => '🇮🇹', 'dial_code' => '+39',  'twilio_code' => 'IT', 'price_usd' => 2.00],
-            ['name' => 'Mexico',         'code' => 'MX', 'flag' => '🇲🇽', 'dial_code' => '+52',  'twilio_code' => 'MX', 'price_usd' => 1.00],
-            ['name' => 'Poland',         'code' => 'PL', 'flag' => '🇵🇱', 'dial_code' => '+48',  'twilio_code' => 'PL', 'price_usd' => 1.50],
-            ['name' => 'Indonesia',      'code' => 'ID', 'flag' => '🇮🇩', 'dial_code' => '+62',  'twilio_code' => 'ID', 'price_usd' => 0.80],
-            ['name' => 'Philippines',    'code' => 'PH', 'flag' => '🇵🇭', 'dial_code' => '+63',  'twilio_code' => 'PH', 'price_usd' => 0.80],
+            ['name' => 'United States',  'code' => 'US', 'flag' => '🇺🇸', 'dial_code' => '+1',   'twilio_code' => 'US', 'price_usd' => 1.00, 'price' => 1600],
+            ['name' => 'United Kingdom', 'code' => 'GB', 'flag' => '🇬🇧', 'dial_code' => '+44',  'twilio_code' => 'GB', 'price_usd' => 1.50, 'price' => 2400],
+            ['name' => 'Canada',         'code' => 'CA', 'flag' => '🇨🇦', 'dial_code' => '+1',   'twilio_code' => 'CA', 'price_usd' => 1.00, 'price' => 1600],
+            ['name' => 'Germany',        'code' => 'DE', 'flag' => '��🇪', 'dial_code' => '+49',  'twilio_code' => 'DE', 'price_usd' => 2.00, 'price' => 3200],
+            ['name' => 'France',         'code' => 'FR', 'flag' => '🇫🇷', 'dial_code' => '+33',  'twilio_code' => 'FR', 'price_usd' => 2.00, 'price' => 3200],
+            ['name' => 'Netherlands',    'code' => 'NL', 'flag' => '🇳🇱', 'dial_code' => '+31',  'twilio_code' => 'NL', 'price_usd' => 2.00, 'price' => 3200],
+            ['name' => 'Sweden',         'code' => 'SE', 'flag' => '🇸🇪', 'dial_code' => '+46',  'twilio_code' => 'SE', 'price_usd' => 2.00, 'price' => 3200],
+            ['name' => 'Australia',      'code' => 'AU', 'flag' => '🇦🇺', 'dial_code' => '+61',  'twilio_code' => 'AU', 'price_usd' => 1.50, 'price' => 2400],
+            ['name' => 'India',          'code' => 'IN', 'flag' => '��🇳', 'dial_code' => '+91',  'twilio_code' => 'IN', 'price_usd' => 0.50, 'price' => 800],
+            ['name' => 'Brazil',         'code' => 'BR', 'flag' => '🇧🇷', 'dial_code' => '+55',  'twilio_code' => 'BR', 'price_usd' => 1.50, 'price' => 2400],
+            ['name' => 'Nigeria',        'code' => 'NG', 'flag' => '🇳🇬', 'dial_code' => '+234', 'twilio_code' => 'NG', 'price_usd' => 0.50, 'price' => 800],
+            ['name' => 'South Africa',   'code' => 'ZA', 'flag' => '🇿🇦', 'dial_code' => '+27',  'twilio_code' => 'ZA', 'price_usd' => 1.00, 'price' => 1600],
+            ['name' => 'Japan',          'code' => 'JP', 'flag' => '🇯🇵', 'dial_code' => '+81',  'twilio_code' => 'JP', 'price_usd' => 3.00, 'price' => 4800],
+            ['name' => 'South Korea',    'code' => 'KR', 'flag' => '🇰��', 'dial_code' => '+82',  'twilio_code' => 'KR', 'price_usd' => 3.00, 'price' => 4800],
+            ['name' => 'Spain',          'code' => 'ES', 'flag' => '🇪🇸', 'dial_code' => '+34',  'twilio_code' => 'ES', 'price_usd' => 2.00, 'price' => 3200],
+            ['name' => 'Italy',          'code' => 'IT', 'flag' => '🇮🇹', 'dial_code' => '+39',  'twilio_code' => 'IT', 'price_usd' => 2.00, 'price' => 3200],
+            ['name' => 'Mexico',         'code' => 'MX', 'flag' => '🇲🇽', 'dial_code' => '+52',  'twilio_code' => 'MX', 'price_usd' => 1.00, 'price' => 1600],
+            ['name' => 'Poland',         'code' => 'PL', 'flag' => '🇵🇱', 'dial_code' => '+48',  'twilio_code' => 'PL', 'price_usd' => 1.50, 'price' => 2400],
+            ['name' => 'Indonesia',      'code' => 'ID', 'flag' => '🇮��', 'dial_code' => '+62',  'twilio_code' => 'ID', 'price_usd' => 0.80, 'price' => 1280],
+            ['name' => 'Philippines',    'code' => 'PH', 'flag' => '🇵🇭', 'dial_code' => '+63',  'twilio_code' => 'PH', 'price_usd' => 0.80, 'price' => 1280],
         ];
 
-        // Filter out already-added countries
         $existingCodes = Country::pluck('code')->map(fn($c) => strtoupper($c))->toArray();
         $filtered = array_values(array_filter($suggestions, fn($s) => !in_array(strtoupper($s['code']), $existingCodes)));
 
@@ -143,13 +174,14 @@ class CountryManagerController extends Controller
     public function import(Request $request)
     {
         $validated = $request->validate([
-            'countries'            => 'required|array|min:1',
-            'countries.*.name'     => 'required|string',
-            'countries.*.code'     => 'required|string|size:2',
-            'countries.*.flag'     => 'nullable|string',
+            'countries'                => 'required|array|min:1',
+            'countries.*.name'         => 'required|string',
+            'countries.*.code'         => 'required|string|size:2',
+            'countries.*.flag'         => 'nullable|string',
             'countries.*.dial_code'    => 'required|string',
             'countries.*.twilio_code'  => 'required|string|size:2',
-            'countries.*.price_usd'    => 'required|numeric|min:0',
+            'countries.*.price_usd'    => 'nullable|numeric|min:0',
+            'countries.*.price'        => 'nullable|numeric|min:0',
         ]);
 
         $imported = 0;

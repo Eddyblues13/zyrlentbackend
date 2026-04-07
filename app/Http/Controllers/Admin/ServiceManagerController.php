@@ -71,8 +71,38 @@ class ServiceManagerController extends Controller
     }
 
     /**
-     * Suggest common OTP verification services (no Twilio API call needed — 
-     * these are the standard services people commonly need OTP for).
+     * Bulk adjust all service prices by a percentage.
+     * positive = increase, negative = decrease
+     */
+    public function bulkAdjustPrices(Request $request)
+    {
+        $request->validate([
+            'percentage' => 'required|numeric|min:-90|max:1000',
+        ]);
+
+        $percent = (float) $request->percentage;
+        $multiplier = 1 + ($percent / 100);
+
+        $services = Service::all();
+        $updated = 0;
+
+        foreach ($services as $service) {
+            $oldCost = (float) $service->cost;
+            if ($oldCost > 0) {
+                $service->cost = round($oldCost * $multiplier, 2);
+                $service->save();
+                $updated++;
+            }
+        }
+
+        return response()->json([
+            'message' => "Adjusted {$updated} service prices by {$percent}%.",
+            'updated' => $updated,
+        ]);
+    }
+
+    /**
+     * Suggest common OTP verification services.
      */
     public function fetchSuggestions()
     {
@@ -99,7 +129,6 @@ class ServiceManagerController extends Controller
             ['name' => 'Steam', 'icon' => 'https://logo.clearbit.com/steampowered.com', 'color' => '#1B2838', 'category' => 'Gaming', 'cost' => 200],
         ];
 
-        // Filter out services that already exist
         $existingNames = Service::pluck('name')->map(fn($n) => strtolower($n))->toArray();
         $filtered = array_values(array_filter($suggestions, fn($s) => !in_array(strtolower($s['name']), $existingNames)));
 

@@ -52,6 +52,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // Services & Countries
     Route::get('/services', [ServiceController::class, 'index']);
     Route::get('/countries', [CountryController::class, 'index']);
+    Route::get("/pricing/calculate", [OrderController::class, "calculatePrice"]);
 
     // Orders (purchase history)
     Route::get('/orders', [OrderController::class, 'index']);
@@ -105,6 +106,7 @@ Route::prefix('admin')->middleware('auth:sanctum')->group(function () {
     Route::delete('/services/{service}', [ServiceManagerController::class, 'destroy']);
     Route::get('/services/suggestions', [ServiceManagerController::class, 'fetchSuggestions']);
     Route::post('/services/import', [ServiceManagerController::class, 'importSuggestions']);
+    Route::post("/services/bulk-adjust-prices", [ServiceManagerController::class, "bulkAdjustPrices"]);
 
     // Country Management
     Route::get('/countries', [CountryManagerController::class, 'index']);
@@ -112,6 +114,9 @@ Route::prefix('admin')->middleware('auth:sanctum')->group(function () {
     Route::put('/countries/{country}', [CountryManagerController::class, 'update']);
     Route::post('/countries/{country}/toggle', [CountryManagerController::class, 'toggleActive']);
     Route::delete('/countries/{country}', [CountryManagerController::class, 'destroy']);
+    Route::post("/countries/bulk-adjust-prices", [CountryManagerController::class, "bulkAdjustPrices"]);
+    Route::get("/countries/suggestions", [CountryManagerController::class, "fetchSuggestions"]);
+    Route::post("/countries/import", [CountryManagerController::class, "import"]);
     
     
 
