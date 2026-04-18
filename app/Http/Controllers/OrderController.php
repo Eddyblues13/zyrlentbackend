@@ -49,6 +49,7 @@ class OrderController extends Controller
         $request->validate([
             'service_id' => 'required|exists:services,id',
             'country_id' => 'required|exists:countries,id',
+            'operator' => 'nullable|string|max:50',
         ]);
 
         $service = Service::findOrFail($request->service_id);
@@ -77,6 +78,7 @@ class OrderController extends Controller
         $validated = $request->validate([
             'service_id' => 'required|exists:services,id',
             'country_id' => 'required|exists:countries,id',
+            'operator' => 'nullable|string|max:50',
         ]);
 
         $user    = $request->user();
@@ -129,7 +131,8 @@ class OrderController extends Controller
         $router = new ProviderRouter();
 
         try {
-            $allocation = $router->allocateNumber($country, $service->slug ?? null);
+            $operator = $validated["operator"] ?? "any";
+            $allocation = $router->allocateNumber($country, $service->slug ?? null, $operator);
         } catch (\Exception $e) {
             \Log::error('ProviderRouter allocation failed', [
                 'user_id'    => $user->id,
@@ -408,6 +411,60 @@ class OrderController extends Controller
         if ($phoneNumber) {
             $phoneNumber->release();
             \Log::info("Internal pool number {$order->phone_number} released back to pool (order #{$order->id}).");
+        }
+    }
+
+
+    /**
+     * Get available operators and their prices for a service+country combo from 5sim.
+     */
+    public function operators(Request $request)
+    {
+        $request->validate([
+            'service_id' => 'required|exists:services,id',
+            'country_id' => 'required|exists:countries,id',
+            'operator' => 'nullable|string|max:50',
+        ]);
+
+        $service = Service::findOrFail($request->service_id);
+        $country = Country::findOrFail($request->country_id);
+
+        $provider = ApiProvider::where('slug', '5sim')->where('is_active', true)->first();
+        if (!$provider) {
+            return response()->json(['operators' => []], 200);
+        }
+
+        try {
+            $fiveSim = FiveSimService::fromProvider($provider);
+            $fiveSimCountry = FiveSimService::mapCountryCode($country->code);
+            $product = FiveSimService::mapServiceToProduct($service->slug ?? $service->name);
+
+            // Get products for this country — returns all operators with prices
+            $products = $fiveSim->getProducts($fiveSimCountry, 'any');
+
+            $operators = [];
+            if (isset($products[$product])) {
+                foreach ($products[$product] as $operatorName => $operatorData) {
+                    $operators[] = [
+                        'name'    => $operatorName,
+                        'cost'    => round((float) ($operatorData['cost'] ?? 0), 4),
+                        'count'   => (int) ($operatorData['count'] ?? 0),
+                        'rate'    => (float) ($operatorData['rate'] ?? 0),
+                    ];
+                }
+            }
+
+            // Sort: "any" first, then by cost ascending
+            usort($operators, function ($a, $b) {
+                if ($a['name'] === 'any') return -1;
+                if ($b['name'] === 'any') return 1;
+                return $a['cost'] <=> $b['cost'];
+            });
+
+            return response()->json(['operators' => $operators]);
+        } catch (\Exception $e) {
+            \Log::warning("Failed to fetch 5sim operators: " . $e->getMessage());
+            return response()->json(['operators' => [['name' => 'any', 'cost' => 0, 'count' => 0, 'rate' => 0]]]);
         }
     }
 }

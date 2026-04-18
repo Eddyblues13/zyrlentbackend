@@ -35,7 +35,7 @@ class ProviderRouter
      *           'response_ms', 'routing_log', 'retry_count', 'provider_order_id']
      * Throws: \Exception if all providers fail
      */
-    public function allocateNumber(Country $country, ?string $serviceSlug = null): array
+    public function allocateNumber(Country $country, ?string $serviceSlug = null, string $operator = "any"): array
     {
         $routingLog = [];
         $attempt = 0;
@@ -57,7 +57,7 @@ class ProviderRouter
 
             $start = microtime(true);
             try {
-                $result = $this->provisionFromProvider($provider, $country, $serviceSlug);
+                $result = $this->provisionFromProvider($provider, $country, $serviceSlug, $operator);
                 $ms = (int) ((microtime(true) - $start) * 1000);
 
                 // Track success
@@ -240,12 +240,12 @@ class ProviderRouter
     //  PROVIDER PROVISIONING
     // ═══════════════════════════════════════════════════════
 
-    private function provisionFromProvider(ApiProvider $provider, Country $country, ?string $serviceSlug = null): array
+    private function provisionFromProvider(ApiProvider $provider, Country $country, ?string $serviceSlug = null, string $operator = "any"): array
     {
         return match ($provider->type) {
             'twilio'  => $this->provisionTwilio($provider, $country),
             'telnyx'  => $this->provisionTelnyx($provider, $country),
-            '5sim'    => $this->provision5Sim($provider, $country, $serviceSlug),
+            '5sim'    => $this->provision5Sim($provider, $country, $serviceSlug, $operator),
             'plivo'   => $this->provisionPlivo($provider, $country),
             'vonage'  => $this->provisionVonage($provider, $country),
             'smspva'  => $this->provisionSmsPva($provider, $country),
@@ -263,7 +263,7 @@ class ProviderRouter
      * 5SIM uses country names (e.g. "england", "usa") and product names (e.g. "whatsapp", "telegram").
      * We map our ISO codes and service names to 5sim's format.
      */
-    private function provision5Sim(ApiProvider $provider, Country $country, ?string $serviceSlug = null): array
+    private function provision5Sim(ApiProvider $provider, Country $country, ?string $serviceSlug = null, string $operator = "any"): array
     {
         $fiveSim = FiveSimService::fromProvider($provider);
 
@@ -275,10 +275,10 @@ class ProviderRouter
             ? FiveSimService::mapServiceToProduct($serviceSlug)
             : 'any';
 
-        Log::info("5SIM: Buying activation for country={$fiveSimCountry}, product={$product}");
+        Log::info("5SIM: Buying activation for country={$fiveSimCountry}, product={$product}, operator={$operator}");
 
         // Buy the activation number
-        $result = $fiveSim->buyActivationNumber($fiveSimCountry, $product);
+        $result = $fiveSim->buyActivationNumber($fiveSimCountry, $product, $operator);
 
         $phone = $result['phone'] ?? null;
         $orderId = $result['id'] ?? null;

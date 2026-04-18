@@ -53,6 +53,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/services', [ServiceController::class, 'index']);
     Route::get('/countries', [CountryController::class, 'index']);
     Route::get("/pricing/calculate", [OrderController::class, "calculatePrice"]);
+    Route::get("/operators", [OrderController::class, "operators"]);
 
     // Orders (purchase history)
     Route::get('/orders', [OrderController::class, 'index']);
