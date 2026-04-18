@@ -35,7 +35,7 @@ class CountryManagerController extends Controller
     {
         $validated = $request->validate([
             'name'        => 'required|string|unique:countries,name',
-            'code'        => 'required|string|size:2',
+            'code'        => 'required|string|size:2|unique:countries,code',
             'flag'        => 'nullable|string',
             'dial_code'   => 'required|string',
             'twilio_code' => 'required|string|size:2',

@@ -202,6 +202,8 @@ Route::prefix('admin')->middleware('auth:sanctum')->group(function () {
     Route::post("/provider/fetch-pricing", [ProviderFetchController::class, "fetchPricing"]);
     Route::post("/provider/import-countries", [ProviderFetchController::class, "importCountries"]);
     Route::post("/provider/import-numbers", [ProviderFetchController::class, "importNumbers"]);
+    Route::post("/provider/fetch-services", [ProviderFetchController::class, "fetchServices"]);
+    Route::post("/provider/import-services", [ProviderFetchController::class, "importServices"]);
     // Number Inventory Management
     Route::get("/numbers", [NumberInventoryController::class, "index"]);
     Route::get("/numbers/stats", [NumberInventoryController::class, "stats"]);

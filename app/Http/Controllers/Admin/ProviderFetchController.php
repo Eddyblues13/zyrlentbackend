@@ -7,9 +7,11 @@ use App\Models\ApiProvider;
 use App\Models\ApiSetting;
 use App\Models\Country;
 use App\Models\PhoneNumber;
+use App\Models\Service;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Http;
+use App\Services\FiveSimService;
 use Twilio\Rest\Client as TwilioClient;
 
 class ProviderFetchController extends Controller
@@ -91,6 +93,10 @@ class ProviderFetchController extends Controller
             return $this->fetchTelnyxCountries($provider);
         }
 
+        if ($provider->type === '5sim') {
+            return $this->fetch5SimCountries($provider);
+        }
+
         return response()->json(['message' => "Provider type '{$provider->type}' not supported yet."], 422);
     }
 
@@ -122,6 +128,10 @@ class ProviderFetchController extends Controller
             return $this->fetchTelnyxNumbers($provider, $request->country_code, $request->get('limit', 10));
         }
 
+        if ($provider->type === '5sim') {
+            return $this->fetch5SimProducts($provider, $request->country_code);
+        }
+
         return response()->json(['message' => "Provider type '{$provider->type}' not supported yet."], 422);
     }
 
@@ -150,6 +160,10 @@ class ProviderFetchController extends Controller
 
         if ($provider->type === 'telnyx') {
             return $this->fetchTelnyxPricing($provider, $request->country_code);
+        }
+
+        if ($provider->type === '5sim') {
+            return $this->fetch5SimPricing($provider, $request->country_code);
         }
 
         return response()->json(['message' => "Provider type '{$provider->type}' not supported yet."], 422);
@@ -775,4 +789,531 @@ class ProviderFetchController extends Controller
             'MK' => '+389', 'AL' => '+355', 'ME' => '+382', 'MD' => '+373', 'XK' => '+383',
         ];
     }
+
+    /* ══════════════════════════════════════════════
+       5SIM IMPLEMENTATION
+       ══════════════════════════════════════════════ */
+
+    /**
+     * Fetch countries from 5sim (uses guest endpoint — no auth required).
+     */
+    private function fetch5SimCountries(ApiProvider $provider)
+    {
+        try {
+            $fiveSim = FiveSimService::fromProvider($provider);
+            $countriesRaw = $fiveSim->getCountries();
+
+            $flagMap = $this->getCountryFlagMap();
+            $dialCodeMap = $this->getDialCodeMap();
+            $existingCodes = Country::pluck('code')->map(fn($c) => strtoupper($c))->toArray();
+            $rate = $this->getExchangeRate();
+            $markup = $this->getMarkupPercent();
+
+            // 5sim returns an object keyed by country name: { "russia": {...}, "ukraine": {...} }
+            $nameToIso = array_flip(FiveSimService::COUNTRY_MAP);
+
+            $results = [];
+            foreach ($countriesRaw as $countryName => $countryData) {
+                $isoCode = $nameToIso[$countryName] ?? null;
+                if (!$isoCode) continue;
+
+                $isoCode = strtoupper($isoCode);
+
+                $results[] = [
+                    'name'           => $this->getCountryName($isoCode),
+                    'code'           => $isoCode,
+                    'flag'           => $flagMap[$isoCode] ?? '',
+                    'dial_code'      => $dialCodeMap[$isoCode] ?? '',
+                    'twilio_code'    => $isoCode,
+                    'fivesim_name'   => $countryName,
+                    'price_usd'      => 0.50,
+                    'price_ngn'      => $this->usdToNgn(0.50),
+                    'already_exists' => in_array($isoCode, $existingCodes),
+                ];
+            }
+
+            usort($results, function ($a, $b) {
+                if ($a['already_exists'] !== $b['already_exists']) {
+                    return $a['already_exists'] ? 1 : -1;
+                }
+                return strcmp($a['name'], $b['name']);
+            });
+
+            return response()->json([
+                'provider'       => $provider->slug,
+                'total'          => count($results),
+                'new_count'      => count(array_filter($results, fn($r) => !$r['already_exists'])),
+                'countries'      => $results,
+                'exchange_rate'  => $rate,
+                'markup_percent' => $markup,
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('5sim fetchCountries error: ' . $e->getMessage());
+            return response()->json([
+                'message' => 'Failed to fetch from 5sim: ' . $e->getMessage(),
+            ], 502);
+        }
+    }
+
+    /**
+     * Fetch available products from 5sim for a given country.
+     * 5sim doesn't sell individual numbers — it sells service activations.
+     * So "fetch numbers" for 5sim means "fetch available products/services".
+     */
+    private function fetch5SimProducts(ApiProvider $provider, string $countryCode)
+    {
+        try {
+            $fiveSim = FiveSimService::fromProvider($provider);
+
+            // Map ISO code to 5sim country name
+            $countryName = FiveSimService::mapCountryCode(strtoupper($countryCode));
+
+            // Fetch products for this country with "any" operator
+            $products = $fiveSim->getProducts($countryName, 'any');
+
+            $results = [];
+            foreach ($products as $productName => $operators) {
+                // Get the "any" operator data, or first available
+                $opData = $operators['any'] ?? reset($operators);
+                if (!$opData) continue;
+
+                $priceUsd = ($opData['cost'] ?? 0) / 100; // 5sim prices are in cents of RUB, but API returns in the account currency
+
+                $results[] = [
+                    'phone_number'  => "5sim:{$productName}",
+                    'friendly_name' => ucfirst(str_replace('_', ' ', $productName)),
+                    'country_code'  => strtoupper($countryCode),
+                    'type'          => 'activation',
+                    'capabilities'  => ['sms' => true, 'mms' => false, 'voice' => false],
+                    'provider'      => $provider->slug,
+                    'product_name'  => $productName,
+                    'quantity'      => $opData['count'] ?? 0,
+                    'cost'          => $opData['cost'] ?? 0,
+                    'already_in_inventory' => false,
+                ];
+            }
+
+            return response()->json([
+                'provider'       => $provider->slug,
+                'country_code'   => strtoupper($countryCode),
+                'total'          => count($results),
+                'numbers'        => $results,
+                'note'           => '5sim provides on-demand activation numbers, not pre-purchased inventory.',
+                'exchange_rate'  => $this->getExchangeRate(),
+                'markup_percent' => $this->getMarkupPercent(),
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error("5sim fetchProducts error ({$countryCode}): " . $e->getMessage());
+            return response()->json([
+                'message' => 'Failed to fetch products from 5sim: ' . $e->getMessage(),
+            ], 502);
+        }
+    }
+
+    /**
+     * Fetch pricing from 5sim for a country or all countries.
+     */
+    private function fetch5SimPricing(ApiProvider $provider, ?string $countryCode = null)
+    {
+        try {
+            $fiveSim = FiveSimService::fromProvider($provider);
+            $rate = $this->getExchangeRate();
+            $markup = $this->getMarkupPercent();
+
+            if ($countryCode) {
+                $countryName = FiveSimService::mapCountryCode(strtoupper($countryCode));
+                $prices = $fiveSim->getPrices($countryName);
+
+                $results = [];
+
+                // Prices are keyed by country, then by product
+                $countryPrices = $prices[$countryName] ?? $prices;
+
+                foreach ($countryPrices as $productName => $operators) {
+                    if (!is_array($operators)) continue;
+
+                    foreach ($operators as $opName => $opData) {
+                        $costRub = (float) ($opData['cost'] ?? 0);
+                        // Convert from RUB to USD approximately (1 RUB ≈ 0.011 USD)
+                        $costUsd = round($costRub * 0.011, 4);
+
+                        $results[] = [
+                            'number_type'       => ucfirst(str_replace('_', ' ', $productName)),
+                            'operator'          => $opName,
+                            'base_price_usd'    => $costUsd,
+                            'current_price_usd' => $costUsd,
+                            'base_price_ngn'    => $this->usdToNgn($costUsd),
+                            'current_price_ngn' => $this->usdToNgn($costUsd),
+                            'quantity'          => $opData['count'] ?? 0,
+                        ];
+                    }
+                }
+
+                return response()->json([
+                    'provider'       => $provider->slug,
+                    'country'        => $this->getCountryName(strtoupper($countryCode)),
+                    'country_code'   => strtoupper($countryCode),
+                    'prices'         => $results,
+                    'exchange_rate'  => $rate,
+                    'markup_percent' => $markup,
+                ]);
+            }
+
+            // No country specified — return list of available countries
+            $countriesRaw = $fiveSim->getCountries();
+            $nameToIso = array_flip(FiveSimService::COUNTRY_MAP);
+            $results = [];
+
+            foreach ($countriesRaw as $countryName => $data) {
+                $isoCode = $nameToIso[$countryName] ?? null;
+                if (!$isoCode) continue;
+
+                $results[] = [
+                    'country'      => $this->getCountryName(strtoupper($isoCode)),
+                    'country_code' => strtoupper($isoCode),
+                ];
+            }
+
+            return response()->json([
+                'provider'       => $provider->slug,
+                'countries'      => $results,
+                'exchange_rate'  => $rate,
+                'markup_percent' => $markup,
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('5sim fetchPricing error: ' . $e->getMessage());
+            return response()->json([
+                'message' => 'Failed to fetch pricing from 5sim: ' . $e->getMessage(),
+            ], 502);
+        }
+    }
+
+    /* ══════════════════════════════════════════════
+       FETCH & IMPORT SERVICES FROM PROVIDERS
+       ══════════════════════════════════════════════ */
+
+    /**
+     * Fetch available services/products from a provider.
+     * For 5sim: returns all products available on the platform.
+     */
+    public function fetchServices(Request $request)
+    {
+        $request->validate([
+            'provider'     => 'required|string',
+            'country_code' => 'nullable|string|size:2',
+        ]);
+
+        $provider = $this->resolveProvider($request->provider);
+        if (!$provider) {
+            return response()->json(['message' => "Provider not found or inactive."], 422);
+        }
+
+        if (!$provider->isConfigured()) {
+            return response()->json(['message' => "Provider '{$provider->name}' credentials not configured."], 422);
+        }
+
+        if ($provider->type === '5sim') {
+            return $this->fetch5SimServices($provider, $request->country_code);
+        }
+
+        return response()->json(['message' => "Service fetching not supported for provider type '{$provider->type}'."], 422);
+    }
+
+    /**
+     * Import selected services into the services table.
+     */
+    public function importServices(Request $request)
+    {
+        $request->validate([
+            'services'             => 'required|array|min:1',
+            'services.*.name'     => 'required|string|max:100',
+        ]);
+
+        $imported = 0;
+        $skipped = 0;
+
+        foreach ($request->services as $item) {
+            // Skip if service with this name already exists
+            if (Service::whereRaw('LOWER(name) = ?', [strtolower($item['name'])])->exists()) {
+                $skipped++;
+                continue;
+            }
+
+            Service::create([
+                'name'      => $item['name'],
+                'icon'      => $item['icon'] ?? null,
+                'color'     => $item['color'] ?? '#33CCFF',
+                'category'  => $item['category'] ?? 'Other',
+                'cost'      => (float) ($item['cost'] ?? 100),
+                'is_active' => true,
+            ]);
+            $imported++;
+        }
+
+        return response()->json([
+            'message'  => "Imported {$imported} services. Skipped {$skipped} duplicates.",
+            'imported' => $imported,
+            'skipped'  => $skipped,
+            'total'    => Service::count(),
+        ]);
+    }
+
+    /**
+     * Fetch products from 5sim and format as importable services.
+     */
+    private function fetch5SimServices(ApiProvider $provider, ?string $countryCode = null)
+    {
+        try {
+            $fiveSim = FiveSimService::fromProvider($provider);
+
+            // Use a popular country to get product list with availability & pricing
+            $country = $countryCode
+                ? FiveSimService::mapCountryCode(strtoupper($countryCode))
+                : 'usa';
+
+            $products = $fiveSim->getProducts($country, 'any');
+
+            // Well-known product metadata (icon URLs, colors, categories)
+            $meta = $this->getProductMeta();
+
+            $existingNames = Service::pluck('name')->map(fn($n) => strtolower($n))->toArray();
+            $rate = $this->getExchangeRate();
+            $markup = $this->getMarkupPercent();
+
+            $results = [];
+            foreach ($products as $productName => $data) {
+                $displayName = $this->formatProductName($productName);
+                $info = $meta[strtolower($productName)] ?? [];
+
+                $priceRub = (float) ($data['Price'] ?? 0);
+                $priceUsd = round($priceRub * 0.011, 4);
+                $priceNgn = $this->usdToNgn($priceUsd);
+
+                // Apply a minimum price floor of 100 NGN
+                $suggestedCost = max($priceNgn, 100);
+
+                $results[] = [
+                    'name'            => $displayName,
+                    'slug'            => $productName,
+                    'icon'            => $info['icon'] ?? 'https://www.google.com/s2/favicons?domain=' . urlencode($productName) . '.com&sz=128',
+                    'color'           => $info['color'] ?? '#33CCFF',
+                    'category'        => $info['category'] ?? 'Other',
+                    'cost'            => round($suggestedCost, 2),
+                    'price_rub'       => $priceRub,
+                    'price_usd'       => $priceUsd,
+                    'quantity'        => $data['Qty'] ?? 0,
+                    'already_exists'  => in_array(strtolower($displayName), $existingNames),
+                ];
+            }
+
+            // Sort: new services first, then alphabetical
+            usort($results, function ($a, $b) {
+                if ($a['already_exists'] !== $b['already_exists']) {
+                    return $a['already_exists'] ? 1 : -1;
+                }
+                // Prioritize well-known services
+                $aPop = !empty($this->getProductMeta()[strtolower($a['slug'])] ?? []);
+                $bPop = !empty($this->getProductMeta()[strtolower($b['slug'])] ?? []);
+                if ($aPop !== $bPop) return $aPop ? -1 : 1;
+                return strcmp($a['name'], $b['name']);
+            });
+
+            return response()->json([
+                'provider'       => $provider->slug,
+                'country_used'   => $country,
+                'total'          => count($results),
+                'new_count'      => count(array_filter($results, fn($r) => !$r['already_exists'])),
+                'services'       => $results,
+                'exchange_rate'  => $rate,
+                'markup_percent' => $markup,
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('5sim fetchServices error: ' . $e->getMessage());
+            return response()->json([
+                'message' => 'Failed to fetch services from 5sim: ' . $e->getMessage(),
+            ], 502);
+        }
+    }
+
+    /**
+     * Format a 5sim product slug into a human-readable name.
+     */
+    private function formatProductName(string $slug): string
+    {
+        $special = [
+            'whatsapp' => 'WhatsApp', 'telegram' => 'Telegram', 'instagram' => 'Instagram',
+            'facebook' => 'Facebook', 'tiktok' => 'TikTok', 'twitter' => 'Twitter / X',
+            'google' => 'Google', 'gmail' => 'Gmail', 'youtube' => 'YouTube',
+            'snapchat' => 'Snapchat', 'discord' => 'Discord', 'linkedin' => 'LinkedIn',
+            'amazon' => 'Amazon', 'microsoft' => 'Microsoft', 'apple' => 'Apple',
+            'uber' => 'Uber', 'netflix' => 'Netflix', 'spotify' => 'Spotify',
+            'paypal' => 'PayPal', 'ebay' => 'eBay', 'yahoo' => 'Yahoo',
+            'line' => 'LINE', 'viber' => 'Viber', 'wechat' => 'WeChat',
+            'signal' => 'Signal', 'tinder' => 'Tinder', 'bumble' => 'Bumble',
+            'steam' => 'Steam', 'openai' => 'OpenAI', 'coinbase' => 'Coinbase',
+            'binance' => 'Binance', 'wise' => 'Wise', 'bolt' => 'Bolt',
+            'airbnb' => 'Airbnb', 'alibaba' => 'Alibaba', 'aliexpress' => 'AliExpress',
+            'alipay' => 'Alipay', 'adobe' => 'Adobe', 'dropbox' => 'Dropbox',
+            'github' => 'GitHub', 'gitlab' => 'GitLab', 'notion' => 'Notion',
+            'slack' => 'Slack', 'zoom' => 'Zoom', 'lyft' => 'Lyft',
+            'grab' => 'Grab', 'shopee' => 'Shopee', 'lazada' => 'Lazada',
+            'foodpanda' => 'Foodpanda', 'deliveroo' => 'Deliveroo',
+            'nike' => 'Nike', 'adidas' => 'Adidas', 'zara' => 'Zara',
+            'shein' => 'SHEIN', 'wish' => 'Wish', 'walmart' => 'Walmart',
+            'temu' => 'Temu', 'reddit' => 'Reddit', 'pinterest' => 'Pinterest',
+            'twitch' => 'Twitch', 'roblox' => 'Roblox', 'epicgames' => 'Epic Games',
+        ];
+
+        return $special[strtolower($slug)] ?? ucfirst(str_replace('_', ' ', $slug));
+    }
+
+    /**
+     * Metadata for well-known services (icons, colors, categories).
+     */
+    private function getProductMeta(): array
+    {
+        return [
+            // Messaging
+            'whatsapp'  => ['icon' => 'https://cdn.simpleicons.org/whatsapp/25D366', 'color' => '#25D366', 'category' => 'Messaging'],
+            'telegram'  => ['icon' => 'https://cdn.simpleicons.org/telegram/26A5E4', 'color' => '#0088CC', 'category' => 'Messaging'],
+            'viber'     => ['icon' => 'https://cdn.simpleicons.org/viber/7360F2', 'color' => '#665CAC', 'category' => 'Messaging'],
+            'wechat'    => ['icon' => 'https://cdn.simpleicons.org/wechat/07C160', 'color' => '#7BB32E', 'category' => 'Messaging'],
+            'signal'    => ['icon' => 'https://cdn.simpleicons.org/signal/3A76F0', 'color' => '#3A76F0', 'category' => 'Messaging'],
+            'line'      => ['icon' => 'https://cdn.simpleicons.org/line/00C300', 'color' => '#06C755', 'category' => 'Messaging'],
+            'imo'       => ['icon' => 'https://www.google.com/s2/favicons?domain=imo.im&sz=128', 'color' => '#00E5FF', 'category' => 'Messaging'],
+            'kakaotalk' => ['icon' => 'https://cdn.simpleicons.org/kakaotalk/FFE812', 'color' => '#FFE812', 'category' => 'Messaging'],
+            'skype'     => ['icon' => 'https://cdn.simpleicons.org/skype/00AFF0', 'color' => '#00AFF0', 'category' => 'Messaging'],
+            'messenger' => ['icon' => 'https://cdn.simpleicons.org/messenger/00B2FF', 'color' => '#00B2FF', 'category' => 'Messaging'],
+
+            // Social
+            'instagram' => ['icon' => 'https://cdn.simpleicons.org/instagram/E4405F', 'color' => '#E4405F', 'category' => 'Social'],
+            'facebook'  => ['icon' => 'https://cdn.simpleicons.org/facebook/1877F2', 'color' => '#1877F2', 'category' => 'Social'],
+            'tiktok'    => ['icon' => 'https://cdn.simpleicons.org/tiktok/FF0050', 'color' => '#FF0050', 'category' => 'Social'],
+            'twitter'   => ['icon' => 'https://cdn.simpleicons.org/twitter/1DA1F2', 'color' => '#1DA1F2', 'category' => 'Social'],
+            'snapchat'  => ['icon' => 'https://cdn.simpleicons.org/snapchat/FFFC00', 'color' => '#FFFC00', 'category' => 'Social'],
+            'discord'   => ['icon' => 'https://cdn.simpleicons.org/discord/5865F2', 'color' => '#5865F2', 'category' => 'Social'],
+            'linkedin'  => ['icon' => 'https://cdn.simpleicons.org/linkedin/0A66C2', 'color' => '#0A66C2', 'category' => 'Social'],
+            'reddit'    => ['icon' => 'https://cdn.simpleicons.org/reddit/FF4500', 'color' => '#FF4500', 'category' => 'Social'],
+            'pinterest' => ['icon' => 'https://cdn.simpleicons.org/pinterest/BD081C', 'color' => '#E60023', 'category' => 'Social'],
+            'tinder'    => ['icon' => 'https://cdn.simpleicons.org/tinder/FF6B6B', 'color' => '#FE3C72', 'category' => 'Social'],
+            'bumble'    => ['icon' => 'https://cdn.simpleicons.org/bumble/FFC629', 'color' => '#FFC629', 'category' => 'Social'],
+            'badoo'     => ['icon' => 'https://cdn.simpleicons.org/badoo/FF7343', 'color' => '#FF7343', 'category' => 'Social'],
+            'vk'        => ['icon' => 'https://cdn.simpleicons.org/vk/0077FF', 'color' => '#0077FF', 'category' => 'Social'],
+            'ok'        => ['icon' => 'https://cdn.simpleicons.org/odnoklassniki/EE8208', 'color' => '#EE8208', 'category' => 'Social'],
+            'weibo'     => ['icon' => 'https://cdn.simpleicons.org/sinaweibo/E6162D', 'color' => '#E6162D', 'category' => 'Social'],
+            'tumblr'    => ['icon' => 'https://cdn.simpleicons.org/tumblr/36465D', 'color' => '#36465D', 'category' => 'Social'],
+            'quora'     => ['icon' => 'https://cdn.simpleicons.org/quora/B92B27', 'color' => '#B92B27', 'category' => 'Social'],
+            'threads'   => ['icon' => 'https://cdn.simpleicons.org/threads/FFFFFF', 'color' => '#000000', 'category' => 'Social'],
+
+            // Email
+            'google'    => ['icon' => 'https://cdn.simpleicons.org/google/4285F4', 'color' => '#4285F4', 'category' => 'Email'],
+            'gmail'     => ['icon' => 'https://cdn.simpleicons.org/gmail/EA4335', 'color' => '#EA4335', 'category' => 'Email'],
+            'yahoo'     => ['icon' => 'https://cdn.simpleicons.org/yahoo/6001D2', 'color' => '#6001D2', 'category' => 'Email'],
+            'outlook'   => ['icon' => 'https://cdn.simpleicons.org/microsoftoutlook/0078D4', 'color' => '#0078D4', 'category' => 'Email'],
+            'mailru'    => ['icon' => 'https://cdn.simpleicons.org/maildotru/FF6600', 'color' => '#FF6600', 'category' => 'Email'],
+            'yandex'    => ['icon' => 'https://cdn.simpleicons.org/yandex/FF0000', 'color' => '#FF0000', 'category' => 'Email'],
+            'protonmail'=> ['icon' => 'https://cdn.simpleicons.org/protonmail/6D4AFF', 'color' => '#6D4AFF', 'category' => 'Email'],
+            'microsoft' => ['icon' => 'https://cdn.simpleicons.org/microsoft/FFFFFF', 'color' => '#00A4EF', 'category' => 'Email'],
+
+            // Shopping
+            'amazon'    => ['icon' => 'https://cdn.simpleicons.org/amazon/FF9900', 'color' => '#FF9900', 'category' => 'Shopping'],
+            'ebay'      => ['icon' => 'https://cdn.simpleicons.org/ebay/E53238', 'color' => '#E53238', 'category' => 'Shopping'],
+            'aliexpress'=> ['icon' => 'https://cdn.simpleicons.org/aliexpress/FF4747', 'color' => '#FF4747', 'category' => 'Shopping'],
+            'alibaba'   => ['icon' => 'https://cdn.simpleicons.org/alibabadotcom/FF6A00', 'color' => '#FF6A00', 'category' => 'Shopping'],
+            'shopee'    => ['icon' => 'https://cdn.simpleicons.org/shopee/EE4D2D', 'color' => '#EE4D2D', 'category' => 'Shopping'],
+            'shopify'   => ['icon' => 'https://cdn.simpleicons.org/shopify/7AB55C', 'color' => '#7AB55C', 'category' => 'Shopping'],
+            'walmart'   => ['icon' => 'https://cdn.simpleicons.org/walmart/0071CE', 'color' => '#0071CE', 'category' => 'Shopping'],
+            'nike'      => ['icon' => 'https://cdn.simpleicons.org/nike/FFFFFF', 'color' => '#000000', 'category' => 'Shopping'],
+            'adidas'    => ['icon' => 'https://cdn.simpleicons.org/adidas/FFFFFF', 'color' => '#000000', 'category' => 'Shopping'],
+            'shein'     => ['icon' => 'https://cdn.simpleicons.org/shein/FFFFFF', 'color' => '#000000', 'category' => 'Shopping'],
+            'etsy'      => ['icon' => 'https://cdn.simpleicons.org/etsy/F16521', 'color' => '#F16521', 'category' => 'Shopping'],
+            'flipkart'  => ['icon' => 'https://cdn.simpleicons.org/flipkart/2874F0', 'color' => '#2874F0', 'category' => 'Shopping'],
+            'lazada'    => ['icon' => 'https://www.google.com/s2/favicons?domain=lazada.com&sz=128', 'color' => '#0F146D', 'category' => 'Shopping'],
+            'temu'      => ['icon' => 'https://www.google.com/s2/favicons?domain=temu.com&sz=128', 'color' => '#FB7701', 'category' => 'Shopping'],
+            'wish'      => ['icon' => 'https://www.google.com/s2/favicons?domain=wish.com&sz=128', 'color' => '#2FB7EC', 'category' => 'Shopping'],
+            'wildberries'=> ['icon' => 'https://www.google.com/s2/favicons?domain=wildberries.ru&sz=128', 'color' => '#481173', 'category' => 'Shopping'],
+            'ozon'      => ['icon' => 'https://www.google.com/s2/favicons?domain=ozon.ru&sz=128', 'color' => '#005BFF', 'category' => 'Shopping'],
+            'avito'     => ['icon' => 'https://www.google.com/s2/favicons?domain=avito.ru&sz=128', 'color' => '#00AAFF', 'category' => 'Shopping'],
+            'olx'       => ['icon' => 'https://www.google.com/s2/favicons?domain=olx.com&sz=128', 'color' => '#002F34', 'category' => 'Shopping'],
+            'mercari'   => ['icon' => 'https://www.google.com/s2/favicons?domain=mercari.com&sz=128', 'color' => '#FF0211', 'category' => 'Shopping'],
+            'rakuten'   => ['icon' => 'https://cdn.simpleicons.org/rakuten/BF0000', 'color' => '#BF0000', 'category' => 'Shopping'],
+
+            // Finance / Crypto
+            'paypal'    => ['icon' => 'https://cdn.simpleicons.org/paypal/00457C', 'color' => '#003087', 'category' => 'Finance'],
+            'binance'   => ['icon' => 'https://cdn.simpleicons.org/binance/F0B90B', 'color' => '#F0B90B', 'category' => 'Finance'],
+            'coinbase'  => ['icon' => 'https://cdn.simpleicons.org/coinbase/0052FF', 'color' => '#0052FF', 'category' => 'Finance'],
+            'wise'      => ['icon' => 'https://cdn.simpleicons.org/wise/9FE870', 'color' => '#9FE870', 'category' => 'Finance'],
+            'revolut'   => ['icon' => 'https://cdn.simpleicons.org/revolut/FFFFFF', 'color' => '#0075EB', 'category' => 'Finance'],
+            'stripe'    => ['icon' => 'https://cdn.simpleicons.org/stripe/635BFF', 'color' => '#635BFF', 'category' => 'Finance'],
+            'cashapp'   => ['icon' => 'https://cdn.simpleicons.org/cashapp/00C244', 'color' => '#00C244', 'category' => 'Finance'],
+            'alipay'    => ['icon' => 'https://cdn.simpleicons.org/alipay/1677FF', 'color' => '#1677FF', 'category' => 'Finance'],
+            'skrill'    => ['icon' => 'https://cdn.simpleicons.org/skrill/862165', 'color' => '#862165', 'category' => 'Finance'],
+            'webmoney'  => ['icon' => 'https://cdn.simpleicons.org/webmoney/036CB5', 'color' => '#036CB5', 'category' => 'Finance'],
+            'qiwi'      => ['icon' => 'https://www.google.com/s2/favicons?domain=qiwi.com&sz=128', 'color' => '#FF8C00', 'category' => 'Finance'],
+            'kraken'    => ['icon' => 'https://cdn.simpleicons.org/kraken/5741D9', 'color' => '#5741D9', 'category' => 'Finance'],
+            'bybit'     => ['icon' => 'https://www.google.com/s2/favicons?domain=bybit.com&sz=128', 'color' => '#F7A600', 'category' => 'Finance'],
+            'okx'       => ['icon' => 'https://www.google.com/s2/favicons?domain=okx.com&sz=128', 'color' => '#FFFFFF', 'category' => 'Finance'],
+
+            // Transport / Delivery
+            'uber'      => ['icon' => 'https://cdn.simpleicons.org/uber/FFFFFF', 'color' => '#000000', 'category' => 'Transport'],
+            'bolt'      => ['icon' => 'https://cdn.simpleicons.org/bolt/34D186', 'color' => '#34D186', 'category' => 'Transport'],
+            'lyft'      => ['icon' => 'https://cdn.simpleicons.org/lyft/FF00BF', 'color' => '#FF00BF', 'category' => 'Transport'],
+            'grab'      => ['icon' => 'https://cdn.simpleicons.org/grab/00B14F', 'color' => '#00B14F', 'category' => 'Transport'],
+            'gojek'     => ['icon' => 'https://cdn.simpleicons.org/gojek/00AA13', 'color' => '#00AA13', 'category' => 'Transport'],
+            'didi'      => ['icon' => 'https://www.google.com/s2/favicons?domain=didiglobal.com&sz=128', 'color' => '#FF7A2A', 'category' => 'Transport'],
+            'doordash'  => ['icon' => 'https://cdn.simpleicons.org/doordash/FF3008', 'color' => '#FF3008', 'category' => 'Transport'],
+            'ubereats'  => ['icon' => 'https://cdn.simpleicons.org/ubereats/06C167', 'color' => '#06C167', 'category' => 'Transport'],
+            'deliveroo' => ['icon' => 'https://cdn.simpleicons.org/deliveroo/00CCBC', 'color' => '#00CCBC', 'category' => 'Transport'],
+            'foodpanda' => ['icon' => 'https://www.google.com/s2/favicons?domain=foodpanda.com&sz=128', 'color' => '#D70F64', 'category' => 'Transport'],
+            'instacart' => ['icon' => 'https://cdn.simpleicons.org/instacart/43B02A', 'color' => '#43B02A', 'category' => 'Transport'],
+            'glovo'     => ['icon' => 'https://www.google.com/s2/favicons?domain=glovoapp.com&sz=128', 'color' => '#FFC244', 'category' => 'Transport'],
+
+            // Gaming / Entertainment
+            'steam'     => ['icon' => 'https://cdn.simpleicons.org/steam/FFFFFF', 'color' => '#1B2838', 'category' => 'Gaming'],
+            'twitch'    => ['icon' => 'https://cdn.simpleicons.org/twitch/9146FF', 'color' => '#9146FF', 'category' => 'Gaming'],
+            'netflix'   => ['icon' => 'https://cdn.simpleicons.org/netflix/E50914', 'color' => '#E50914', 'category' => 'Entertainment'],
+            'spotify'   => ['icon' => 'https://cdn.simpleicons.org/spotify/1DB954', 'color' => '#1DB954', 'category' => 'Entertainment'],
+            'youtube'   => ['icon' => 'https://cdn.simpleicons.org/youtube/FF0000', 'color' => '#FF0000', 'category' => 'Entertainment'],
+            'roblox'    => ['icon' => 'https://cdn.simpleicons.org/roblox/FFFFFF', 'color' => '#000000', 'category' => 'Gaming'],
+            'epicgames' => ['icon' => 'https://cdn.simpleicons.org/epicgames/FFFFFF', 'color' => '#313131', 'category' => 'Gaming'],
+            'playstation'=> ['icon' => 'https://cdn.simpleicons.org/playstation/003791', 'color' => '#003791', 'category' => 'Gaming'],
+            'xbox'      => ['icon' => 'https://cdn.simpleicons.org/xbox/107C10', 'color' => '#107C10', 'category' => 'Gaming'],
+            'deezer'    => ['icon' => 'https://cdn.simpleicons.org/deezer/FEAA2D', 'color' => '#FEAA2D', 'category' => 'Entertainment'],
+            'hulu'      => ['icon' => 'https://cdn.simpleicons.org/hulu/1CE783', 'color' => '#1CE783', 'category' => 'Entertainment'],
+            'garena'    => ['icon' => 'https://www.google.com/s2/favicons?domain=garena.com&sz=128', 'color' => '#FF5500', 'category' => 'Gaming'],
+            'blizzard'  => ['icon' => 'https://cdn.simpleicons.org/blizzardentertainment/148EFF', 'color' => '#148EFF', 'category' => 'Gaming'],
+
+            // Tech / Productivity
+            'apple'     => ['icon' => 'https://cdn.simpleicons.org/apple/FFFFFF', 'color' => '#A2AAAD', 'category' => 'Other'],
+            'openai'    => ['icon' => 'https://cdn.simpleicons.org/openai/FFFFFF', 'color' => '#412991', 'category' => 'Other'],
+            'zoom'      => ['icon' => 'https://cdn.simpleicons.org/zoom/0B5CFF', 'color' => '#2D8CFF', 'category' => 'Other'],
+            'slack'     => ['icon' => 'https://cdn.simpleicons.org/slack/4A154B', 'color' => '#4A154B', 'category' => 'Other'],
+            'notion'    => ['icon' => 'https://cdn.simpleicons.org/notion/FFFFFF', 'color' => '#000000', 'category' => 'Other'],
+            'github'    => ['icon' => 'https://cdn.simpleicons.org/github/FFFFFF', 'color' => '#181717', 'category' => 'Other'],
+            'gitlab'    => ['icon' => 'https://cdn.simpleicons.org/gitlab/FC6D26', 'color' => '#FC6D26', 'category' => 'Other'],
+            'adobe'     => ['icon' => 'https://cdn.simpleicons.org/adobe/FF0000', 'color' => '#FF0000', 'category' => 'Other'],
+            'dropbox'   => ['icon' => 'https://cdn.simpleicons.org/dropbox/0061FF', 'color' => '#0061FF', 'category' => 'Other'],
+            'canva'     => ['icon' => 'https://cdn.simpleicons.org/canva/00C4CC', 'color' => '#00C4CC', 'category' => 'Other'],
+            'figma'     => ['icon' => 'https://cdn.simpleicons.org/figma/F24E1E', 'color' => '#F24E1E', 'category' => 'Other'],
+
+            // Travel
+            'airbnb'    => ['icon' => 'https://cdn.simpleicons.org/airbnb/FF5A5F', 'color' => '#FF5A5F', 'category' => 'Travel'],
+            'booking'   => ['icon' => 'https://cdn.simpleicons.org/bookingdotcom/003580', 'color' => '#003580', 'category' => 'Travel'],
+
+            // Other popular 5sim services
+            'naver'     => ['icon' => 'https://cdn.simpleicons.org/naver/03C75A', 'color' => '#03C75A', 'category' => 'Other'],
+            'zalo'      => ['icon' => 'https://www.google.com/s2/favicons?domain=zalo.me&sz=128', 'color' => '#0068FF', 'category' => 'Messaging'],
+            'truecaller'=> ['icon' => 'https://www.google.com/s2/favicons?domain=truecaller.com&sz=128', 'color' => '#0F85FF', 'category' => 'Other'],
+            'fiverr'    => ['icon' => 'https://cdn.simpleicons.org/fiverr/1DBF73', 'color' => '#1DBF73', 'category' => 'Other'],
+            'upwork'    => ['icon' => 'https://cdn.simpleicons.org/upwork/14A800', 'color' => '#14A800', 'category' => 'Other'],
+            'duolingo'  => ['icon' => 'https://cdn.simpleicons.org/duolingo/58CC02', 'color' => '#58CC02', 'category' => 'Other'],
+            'strava'    => ['icon' => 'https://cdn.simpleicons.org/strava/FC4C02', 'color' => '#FC4C02', 'category' => 'Other'],
+            'zomato'    => ['icon' => 'https://cdn.simpleicons.org/zomato/E23744', 'color' => '#E23744', 'category' => 'Transport'],
+        ];
+    }
+
 }

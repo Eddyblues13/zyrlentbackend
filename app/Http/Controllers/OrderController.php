@@ -2,10 +2,11 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\ApiSetting;
+use App\Models\ApiProvider;
 use App\Models\Country;
 use App\Models\NumberOrder;
 use App\Models\Service;
+use App\Services\FiveSimService;
 use App\Services\ProviderRouter;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -25,9 +26,9 @@ class OrderController extends Controller
         if ($search = $request->get('search')) {
             $query->where(function ($q) use ($search) {
                 $q->where('order_ref', 'like', "%{$search}%")
-                   ->orWhere('phone_number', 'like', "%{$search}%")
-                   ->orWhereHas('service', fn($q2) => $q2->where('name', 'like', "%{$search}%"))
-                   ->orWhereHas('country', fn($q2) => $q2->where('name', 'like', "%{$search}%"));
+                    ->orWhere('phone_number', 'like', "%{$search}%")
+                    ->orWhereHas('service', fn($q2) => $q2->where('name', 'like', "%{$search}%"))
+                    ->orWhereHas('country', fn($q2) => $q2->where('name', 'like', "%{$search}%"));
             });
         }
 
@@ -42,7 +43,6 @@ class OrderController extends Controller
 
     /**
      * Calculate total price for a service+country combo.
-     * Used by the frontend confirm step before placing an order.
      */
     public function calculatePrice(Request $request)
     {
@@ -69,8 +69,8 @@ class OrderController extends Controller
     /**
      * Create a new number order — smart-routes through available providers.
      *
-     * Pricing: Total cost = service price (NGN) + country price (NGN)
-     * Both are set by admin in Naira directly.
+     * For 5sim: buys an activation number and stores the 5sim order ID.
+     * Frontend then polls GET /api/orders/{id} to check for SMS via 5sim API.
      */
     public function store(Request $request)
     {
@@ -171,12 +171,13 @@ class OrderController extends Controller
                     'twilio_sid'           => $allocation['provider_sid'],
                     'status'               => 'pending',
                     'cost'                 => $cost,
-                    'expires_at'           => now()->addMinutes((int) env('NUMBER_EXPIRY_MINUTES', 5)),
+                    'expires_at'           => now()->addMinutes((int) env('NUMBER_EXPIRY_MINUTES', 15)),
                     'ip_address'           => $request->ip(),
                     'user_agent'           => $request->userAgent(),
                     // Provider routing metadata
                     'provider_id'          => $allocation['provider_id'],
                     'provider_slug'        => $allocation['provider_slug'],
+                    'provider_order_id'    => $allocation['provider_order_id'] ?? null,
                     'provider_response_ms' => $allocation['response_ms'],
                     'retry_count'          => $allocation['retry_count'],
                     'routing_log'          => $allocation['routing_log'],
@@ -190,7 +191,8 @@ class OrderController extends Controller
                 $router->releaseNumber(
                     $allocation['provider_sid'],
                     $allocation['provider_id'],
-                    $allocation['provider_slug']
+                    $allocation['provider_slug'],
+                    $allocation['provider_order_id'] ?? null
                 );
                 \Log::info("Released number {$allocation['phone_number']} after DB failure.");
             } catch (\Exception $releaseEx) {
@@ -211,6 +213,9 @@ class OrderController extends Controller
 
     /**
      * Get a single order — used for polling OTP status.
+     *
+     * For 5sim orders: actively polls the 5sim API to check for SMS,
+     * then updates the local order if SMS was received.
      */
     public function show(Request $request, NumberOrder $order)
     {
@@ -224,6 +229,11 @@ class OrderController extends Controller
             $this->releaseNumber($order);
             $this->releaseInternalNumber($order);
             $this->refundOrder($order, $request->user());
+        }
+
+        // For 5sim orders that are still pending: poll 5sim for SMS
+        if ($order->status === 'pending' && $order->provider_slug === '5sim' && $order->provider_order_id) {
+            $this->poll5SimForSms($order);
         }
 
         $order->load(['service:id,name,color,icon', 'country:id,name,flag,dial_code']);
@@ -274,7 +284,81 @@ class OrderController extends Controller
         return 0.0;
     }
 
+    /**
+     * Poll 5sim API to check if SMS has been received for a pending order.
+     */
+    private function poll5SimForSms(NumberOrder $order): void
+    {
+        try {
+            $router = new ProviderRouter();
+            $fiveSimData = $router->check5SimOrder(
+                $order->provider_order_id,
+                $order->provider_id
+            );
 
+            if (!$fiveSimData) return;
+
+            $fiveSimStatus = $fiveSimData['status'] ?? '';
+            $smsArray = $fiveSimData['sms'] ?? [];
+
+            // If SMS was received on 5sim
+            if (!empty($smsArray) && ($fiveSimStatus === 'RECEIVED' || $fiveSimStatus === 'FINISHED')) {
+                // Get the last SMS (most recent)
+                $lastSms = end($smsArray);
+                $smsText = $lastSms['text'] ?? '';
+                $smsCode = $lastSms['code'] ?? '';
+                $smsSender = $lastSms['sender'] ?? '';
+
+                // Use the extracted code if available, otherwise the full text
+                $otpCode = $smsCode ?: $smsText;
+
+                $order->update([
+                    'otp_code'     => $otpCode,
+                    'sms_from'     => $smsSender,
+                    'status'       => 'completed',
+                    'completed_at' => now(),
+                ]);
+
+                \Log::info("5SIM OTP received for order #{$order->id}: code={$otpCode}, sender={$smsSender}");
+
+                // Track success on the provider
+                if ($order->provider_id) {
+                    $provider = ApiProvider::find($order->provider_id);
+                    if ($provider) {
+                        $provider->increment('total_successes');
+                    }
+                }
+
+                // Finish the 5sim order (mark complete on their side)
+                try {
+                    $provider = $order->provider_id ? ApiProvider::find($order->provider_id) : null;
+                    if ($provider) {
+                        $fiveSim = FiveSimService::fromProvider($provider);
+                        $fiveSim->finishOrder((int) $order->provider_order_id);
+                    }
+                } catch (\Exception $e) {
+                    \Log::warning("5SIM: Failed to finish order on 5sim side: {$e->getMessage()}");
+                }
+            }
+
+            // If 5sim order timed out on their side
+            if ($fiveSimStatus === 'TIMEOUT') {
+                $order->update(['status' => 'expired']);
+                $this->refundOrder($order, $order->user);
+                \Log::info("5SIM order #{$order->id} timed out (status: {$fiveSimStatus})");
+            }
+
+            // If 5sim order was cancelled on their side (e.g. admin cancelled from provider dashboard)
+            if (in_array($fiveSimStatus, ['CANCELED', 'BANNED'])) {
+                $order->update(['status' => 'cancelled']);
+                $this->refundOrder($order, $order->user);
+                \Log::info("5SIM order #{$order->id} cancelled on 5sim side (status: {$fiveSimStatus})");
+            }
+
+        } catch (\Exception $e) {
+            \Log::warning("5SIM poll failed for order #{$order->id}: {$e->getMessage()}");
+        }
+    }
 
     /**
      * Release a number back to its provider using the smart router.
@@ -288,7 +372,8 @@ class OrderController extends Controller
             $router->releaseNumber(
                 $order->twilio_sid,
                 $order->provider_id,
-                $order->provider_slug
+                $order->provider_slug,
+                $order->provider_order_id
             );
             \Log::info("Released number {$order->phone_number} (order #{$order->id}) via provider {$order->provider_slug}");
         } catch (\Exception $e) {

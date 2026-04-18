@@ -31,7 +31,8 @@ class ProviderRouter
     /**
      * Allocate a number for a given country.
      *
-     * Returns: ['phone_number', 'provider_sid', 'provider_id', 'provider_slug', 'response_ms', 'routing_log']
+     * Returns: ['phone_number', 'provider_sid', 'provider_id', 'provider_slug',
+     *           'response_ms', 'routing_log', 'retry_count', 'provider_order_id']
      * Throws: \Exception if all providers fail
      */
     public function allocateNumber(Country $country, ?string $serviceSlug = null): array
@@ -56,7 +57,7 @@ class ProviderRouter
 
             $start = microtime(true);
             try {
-                $result = $this->provisionFromProvider($provider, $country);
+                $result = $this->provisionFromProvider($provider, $country, $serviceSlug);
                 $ms = (int) ((microtime(true) - $start) * 1000);
 
                 // Track success
@@ -69,13 +70,14 @@ class ProviderRouter
                 ];
 
                 return [
-                    'phone_number'  => $result['phone_number'],
-                    'provider_sid'  => $result['provider_sid'],
-                    'provider_id'   => $provider->id,
-                    'provider_slug' => $provider->slug,
-                    'response_ms'   => $ms,
-                    'routing_log'   => $routingLog,
-                    'retry_count'   => $attempt,
+                    'phone_number'     => $result['phone_number'],
+                    'provider_sid'     => $result['provider_sid'],
+                    'provider_order_id' => $result['provider_order_id'] ?? null,
+                    'provider_id'      => $provider->id,
+                    'provider_slug'    => $provider->slug,
+                    'response_ms'      => $ms,
+                    'routing_log'      => $routingLog,
+                    'retry_count'      => $attempt,
                 ];
 
             } catch (\Exception $e) {
@@ -104,7 +106,7 @@ class ProviderRouter
     /**
      * Release a provisioned number back to the provider.
      */
-    public function releaseNumber(string $providerSid, ?int $providerId = null, ?string $providerSlug = null): void
+    public function releaseNumber(string $providerSid, ?int $providerId = null, ?string $providerSlug = null, ?string $providerOrderId = null): void
     {
         // Determine which provider to release from
         $provider = null;
@@ -124,6 +126,7 @@ class ProviderRouter
             match ($provider->type) {
                 'twilio'  => $this->releaseTwilioNumber($provider, $providerSid),
                 'telnyx'  => $this->releaseTelnyxNumber($provider, $providerSid),
+                '5sim'    => $this->release5SimNumber($provider, $providerOrderId ?? $providerSid),
                 'plivo'   => $this->releasePlivoNumber($provider, $providerSid),
                 'vonage'  => $this->releaseVonageNumber($provider, $providerSid),
                 default   => Log::warning("No release handler for provider type: {$provider->type}"),
@@ -133,9 +136,30 @@ class ProviderRouter
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════
+    /**
+     * Check a 5sim order for SMS (polling).
+     * Returns the order data from 5sim including any received SMS.
+     */
+    public function check5SimOrder(string $providerOrderId, ?int $providerId = null): ?array
+    {
+        $provider = $providerId
+            ? ApiProvider::find($providerId)
+            : ApiProvider::where('type', '5sim')->where('is_active', true)->first();
+
+        if (!$provider) return null;
+
+        try {
+            $fiveSim = FiveSimService::fromProvider($provider);
+            return $fiveSim->checkOrder((int) $providerOrderId);
+        } catch (\Exception $e) {
+            Log::warning("5SIM check order failed for {$providerOrderId}: {$e->getMessage()}");
+            return null;
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════
     //  INTERNAL POOL
-    // ═══════════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════
 
     private function tryInternalPool(Country $country, ?string $serviceSlug = null): ?array
     {
@@ -170,21 +194,19 @@ class ProviderRouter
         ]);
 
         return [
-            'phone_number'  => $number->phone_number,
-            'provider_sid'  => $number->provider_sid,
-            'provider_id'   => null,
-            'provider_slug' => 'internal',
-            'response_ms'   => 0,
+            'phone_number'      => $number->phone_number,
+            'provider_sid'      => $number->provider_sid,
+            'provider_order_id' => null,
+            'provider_id'       => null,
+            'provider_slug'     => 'internal',
+            'response_ms'       => 0,
         ];
     }
 
-    // ═══════════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════
     //  ROUTING ORDER
-    // ═══════════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════
 
-    /**
-     * Get providers in routing order based on global routing mode.
-     */
     private function getOrderedProviders()
     {
         $mode = ApiSetting::getValue('routing_mode', 'priority');
@@ -193,13 +215,11 @@ class ProviderRouter
             ->whereNotNull('credentials');
 
         return match ($mode) {
-            // Cheapest first (by cost_multiplier), then priority
             'cheapest' => $query->orderBy('cost_multiplier', 'asc')
                                 ->orderBy('priority', 'asc')
                                 ->get()
                                 ->filter(fn($p) => $p->isConfigured()),
 
-            // Smart: weighted score = (success_rate * 0.6) + ((1/cost_multiplier) * 0.2) + ((1/priority) * 0.2)
             'smart' => $query->get()
                              ->filter(fn($p) => $p->isConfigured())
                              ->sortByDesc(function ($p) {
@@ -209,7 +229,6 @@ class ProviderRouter
                                  return ($sr * 0.6) + ((100 / $cm) * 0.2) + ((100 / $pr) * 0.2);
                              }),
 
-            // Default: priority (lower number = higher priority)
             default => $query->orderBy('priority', 'asc')
                              ->orderBy('success_rate', 'desc')
                              ->get()
@@ -217,24 +236,106 @@ class ProviderRouter
         };
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    //  PROVIDER PROVISIONING (buy a number on-demand)
-    // ═══════════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════
+    //  PROVIDER PROVISIONING
+    // ═══════════════════════════════════════════════════════
 
-    private function provisionFromProvider(ApiProvider $provider, Country $country): array
+    private function provisionFromProvider(ApiProvider $provider, Country $country, ?string $serviceSlug = null): array
     {
         return match ($provider->type) {
             'twilio'  => $this->provisionTwilio($provider, $country),
             'telnyx'  => $this->provisionTelnyx($provider, $country),
+            '5sim'    => $this->provision5Sim($provider, $country, $serviceSlug),
             'plivo'   => $this->provisionPlivo($provider, $country),
             'vonage'  => $this->provisionVonage($provider, $country),
-            '5sim'    => $this->provision5Sim($provider, $country),
             'smspva'  => $this->provisionSmsPva($provider, $country),
             default   => throw new \Exception("Unsupported provider type: {$provider->type}"),
         };
     }
 
-    // ── Twilio ──
+    // ═══════════════════════════════════════════════════════
+    //  5SIM IMPLEMENTATION
+    // ═══════════════════════════════════════════════════════
+
+    /**
+     * Buy an activation number via 5SIM.
+     *
+     * 5SIM uses country names (e.g. "england", "usa") and product names (e.g. "whatsapp", "telegram").
+     * We map our ISO codes and service names to 5sim's format.
+     */
+    private function provision5Sim(ApiProvider $provider, Country $country, ?string $serviceSlug = null): array
+    {
+        $fiveSim = FiveSimService::fromProvider($provider);
+
+        // Map country code to 5sim country name
+        $fiveSimCountry = FiveSimService::mapCountryCode($country->code);
+
+        // Map service slug to 5sim product name
+        $product = $serviceSlug
+            ? FiveSimService::mapServiceToProduct($serviceSlug)
+            : 'any';
+
+        Log::info("5SIM: Buying activation for country={$fiveSimCountry}, product={$product}");
+
+        // Buy the activation number
+        $result = $fiveSim->buyActivationNumber($fiveSimCountry, $product);
+
+        $phone = $result['phone'] ?? null;
+        $orderId = $result['id'] ?? null;
+
+        if (!$phone || !$orderId) {
+            throw new \Exception('5SIM returned invalid response — no phone or order ID');
+        }
+
+        Log::info("5SIM: Number purchased — phone={$phone}, orderId={$orderId}, status={$result['status']}");
+
+        return [
+            'phone_number'      => $phone,
+            'provider_sid'      => (string) $orderId, // Store 5sim order ID as provider_sid for compatibility
+            'provider_order_id' => (string) $orderId,
+        ];
+    }
+
+    /**
+     * Cancel/finish a 5sim order (release number).
+     * If SMS was received (RECEIVED/FINISHED status), we finish it.
+     * If still pending, we cancel it to get refund on 5sim.
+     */
+    private function release5SimNumber(ApiProvider $provider, string $orderId): void
+    {
+        if (!$orderId || !is_numeric($orderId)) {
+            Log::warning("5SIM: Cannot release — invalid order ID: {$orderId}");
+            return;
+        }
+
+        try {
+            $fiveSim = FiveSimService::fromProvider($provider);
+            $order = $fiveSim->checkOrder((int) $orderId);
+            $status = $order['status'] ?? '';
+
+            if (in_array($status, ['FINISHED', 'CANCELED', 'BANNED', 'TIMEOUT'])) {
+                Log::info("5SIM: Order {$orderId} already in terminal state: {$status}");
+                return;
+            }
+
+            if ($status === 'RECEIVED' || !empty($order['sms'])) {
+                // SMS was received — finish the order
+                $fiveSim->finishOrder((int) $orderId);
+                Log::info("5SIM: Finished order {$orderId}");
+            } else {
+                // No SMS — cancel the order (refund on 5sim side)
+                $fiveSim->cancelOrder((int) $orderId);
+                Log::info("5SIM: Cancelled order {$orderId}");
+            }
+        } catch (\Exception $e) {
+            Log::warning("5SIM: Failed to release order {$orderId}: {$e->getMessage()}");
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════
+    //  TWILIO IMPLEMENTATION
+    // ═══════════════════════════════════════════════════════
+
     private function provisionTwilio(ApiProvider $provider, Country $country): array
     {
         $twilio = new TwilioClient(
@@ -244,7 +345,6 @@ class ProviderRouter
 
         $countryCode = $country->twilio_code ?: $country->code;
 
-        // Try local → mobile → tollFree
         $phoneNumber = null;
         $types = ['local', 'mobile', 'tollFree'];
 
@@ -266,13 +366,11 @@ class ProviderRouter
             throw new \Exception("No SMS-enabled numbers available in {$countryCode}");
         }
 
-        // Purchase the number
         $webhookUrl = $provider->getSetting('webhook_url')
             ?: env('TWILIO_WEBHOOK_URL', rtrim(env('APP_URL'), '/') . '/api/webhook/sms');
 
         $createParams = ['phoneNumber' => $phoneNumber];
 
-        // Only attach webhook for public URLs
         if ($webhookUrl && !preg_match('/(localhost|127\.0\.0\.\d+)/i', $webhookUrl)) {
             $createParams['smsUrl']    = $webhookUrl;
             $createParams['smsMethod'] = 'POST';
@@ -281,8 +379,9 @@ class ProviderRouter
         $purchased = $twilio->incomingPhoneNumbers->create($createParams);
 
         return [
-            'phone_number' => $phoneNumber,
-            'provider_sid' => $purchased->sid,
+            'phone_number'      => $phoneNumber,
+            'provider_sid'      => $purchased->sid,
+            'provider_order_id' => null,
         ];
     }
 
@@ -307,15 +406,17 @@ class ProviderRouter
         }
     }
 
-    // ── Telnyx ──
+    // ═══════════════════════════════════════════════════════
+    //  TELNYX IMPLEMENTATION
+    // ═══════════════════════════════════════════════════════
+
     private function provisionTelnyx(ApiProvider $provider, Country $country): array
     {
         $apiKey = $provider->getCredential('api_key');
         if (!$apiKey) throw new \Exception('Telnyx API key not configured');
 
-        $countryCode = $country->code; // ISO 3166-1 alpha-2, e.g. "US", "CA", "GB"
+        $countryCode = $country->code;
 
-        // Step 1: Search for available SMS-enabled numbers
         $searchResponse = Http::withHeaders([
             'Authorization' => "Bearer {$apiKey}",
             'Accept'        => 'application/json',
@@ -335,16 +436,14 @@ class ProviderRouter
             throw new \Exception("No SMS-enabled Telnyx numbers available in {$countryCode}");
         }
 
-        $phoneNumber = $available[0]['phone_number']; // E.164 format
+        $phoneNumber = $available[0]['phone_number'];
 
-        // Step 2: Purchase the number via number_orders
         $orderPayload = [
             'phone_numbers' => [
                 ['phone_number' => $phoneNumber],
             ],
         ];
 
-        // Attach messaging profile if configured
         $messagingProfileId = $provider->getSetting('messaging_profile_id');
         if ($messagingProfileId) {
             $orderPayload['messaging_profile_id'] = $messagingProfileId;
@@ -364,34 +463,24 @@ class ProviderRouter
         $orderData = $orderResponse->json('data', []);
         $orderId   = $orderData['id'] ?? null;
 
-        // Step 3: If messaging profile configured, assign webhook URL to the number
-        // Telnyx uses messaging profiles for webhook routing — the number
-        // must be linked to a messaging profile that has the webhook URL set.
-        // We'll do this after the number is provisioned by updating it.
         if ($messagingProfileId) {
-            // Small delay to let the number order complete
-            usleep(500000); // 0.5s
-
+            usleep(500000);
             $this->updateTelnyxNumberMessaging($apiKey, $phoneNumber, $messagingProfileId);
         }
 
         Log::info("Telnyx number provisioned: {$phoneNumber}, order ID: {$orderId}");
 
         return [
-            'phone_number' => $phoneNumber,
-            'provider_sid' => $orderId ?? $phoneNumber, // Use order ID or phone number as reference
+            'phone_number'      => $phoneNumber,
+            'provider_sid'      => $orderId ?? $phoneNumber,
+            'provider_order_id' => null,
         ];
     }
 
-    /**
-     * Update a Telnyx number to assign it to a messaging profile.
-     */
     private function updateTelnyxNumberMessaging(string $apiKey, string $phoneNumber, string $messagingProfileId): void
     {
         try {
-            // URL-encode the + in the phone number
             $encodedNumber = urlencode($phoneNumber);
-
             Http::withHeaders([
                 'Authorization' => "Bearer {$apiKey}",
                 'Content-Type'  => 'application/json',
@@ -403,9 +492,6 @@ class ProviderRouter
         }
     }
 
-    /**
-     * Release a Telnyx number — delete it from the account.
-     */
     private function releaseTelnyxNumber(ApiProvider $provider, string $sid): void
     {
         $apiKey = $provider->getCredential('api_key');
@@ -414,13 +500,9 @@ class ProviderRouter
             return;
         }
 
-        // $sid may be an order ID or a phone number (E.164).
-        // If it looks like a phone number, delete it directly.
-        // Otherwise, we need to look up the number from the order.
         $phoneNumber = $sid;
 
         if (!str_starts_with($sid, '+')) {
-            // It's an order ID — try to get the phone number from the order
             try {
                 $response = Http::withHeaders([
                     'Authorization' => "Bearer {$apiKey}",
@@ -481,38 +563,23 @@ class ProviderRouter
         Log::info("Vonage release placeholder for SID {$sid}");
     }
 
-    // ── 5SIM ──
-    private function provision5Sim(ApiProvider $provider, Country $country): array
-    {
-        $apiKey = $provider->getCredential('api_key');
-        if (!$apiKey) throw new \Exception('5SIM API key not configured');
-
-        // TODO: Implement 5SIM API
-        // GET https://5sim.net/v1/guest/products/{country}/{operator}
-        // GET https://5sim.net/v1/user/buy/activation/{country}/{operator}/{product}
-        throw new \Exception('5SIM provider integration coming soon');
-    }
-
     // ── SMSPVA ──
     private function provisionSmsPva(ApiProvider $provider, Country $country): array
     {
         $apiKey = $provider->getCredential('api_key');
         if (!$apiKey) throw new \Exception('SMSPVA API key not configured');
-
-        // TODO: Implement SMSPVA API
         throw new \Exception('SMSPVA provider integration coming soon');
     }
 
-    // ═══════════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════
     //  METRICS TRACKING
-    // ═══════════════════════════════════════════════════════════════
+    // ═══════════════════════════════════════════════════════
 
     private function recordSuccess(ApiProvider $provider, int $responseMs): void
     {
         $total = $provider->total_requests + 1;
         $successes = $provider->total_successes + 1;
 
-        // Rolling average response time
         $avgMs = $provider->avg_response_ms > 0
             ? (int) (($provider->avg_response_ms * $provider->total_requests + $responseMs) / $total)
             : $responseMs;

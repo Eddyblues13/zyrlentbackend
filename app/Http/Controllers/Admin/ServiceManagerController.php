@@ -17,7 +17,7 @@ class ServiceManagerController extends Controller
     public function store(Request $request)
     {
         $validated = $request->validate([
-            'name' => 'required|string|max:100',
+            'name' => 'required|string|max:100|unique:services,name',
             'icon' => 'nullable|string|max:50',
             'color' => 'nullable|string|max:20',
             'category' => 'nullable|string|max:50',

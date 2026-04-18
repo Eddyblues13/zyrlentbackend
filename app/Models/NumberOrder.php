@@ -13,7 +13,7 @@ class NumberOrder extends Model
         'expires_at', 'ip_address', 'user_agent', 'completed_at',
         // Provider routing fields
         'provider_id', 'provider_slug', 'provider_response_ms',
-        'retry_count', 'routing_log',
+        'retry_count', 'routing_log', 'provider_order_id',
     ];
 
     protected $casts = [
