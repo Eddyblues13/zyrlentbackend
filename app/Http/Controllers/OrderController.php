@@ -439,19 +439,18 @@ class OrderController extends Controller
             $fiveSimCountry = FiveSimService::mapCountryCode($country->code);
             $product = FiveSimService::mapServiceToProduct($service->slug ?? $service->name);
 
-            // Get products for this country — returns all operators with prices
-            $products = $fiveSim->getProducts($fiveSimCountry, 'any');
+            // Get prices for this country — returns {country: {product: {operator: {cost,count,rate}}}}
+            $prices = $fiveSim->getPrices($fiveSimCountry);
 
             $operators = [];
-            if (isset($products[$product])) {
-                foreach ($products[$product] as $operatorName => $operatorData) {
-                    $operators[] = [
-                        'name'    => $operatorName,
-                        'cost'    => round((float) ($operatorData['cost'] ?? 0), 4),
-                        'count'   => (int) ($operatorData['count'] ?? 0),
-                        'rate'    => (float) ($operatorData['rate'] ?? 0),
-                    ];
-                }
+            $productOperators = $prices[$fiveSimCountry][$product] ?? [];
+            foreach ($productOperators as $operatorName => $operatorData) {
+                $operators[] = [
+                    'name'    => $operatorName,
+                    'cost'    => round((float) ($operatorData['cost'] ?? 0), 4),
+                    'count'   => (int) ($operatorData['count'] ?? 0),
+                    'rate'    => round((float) ($operatorData['rate'] ?? 0), 2),
+                ];
             }
 
             // Sort: "any" first, then by cost ascending
