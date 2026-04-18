@@ -1098,7 +1098,7 @@ class ProviderFetchController extends Controller
                 $results[] = [
                     'name'            => $displayName,
                     'slug'            => $productName,
-                    'icon'            => $info['icon'] ?? 'https://www.google.com/s2/favicons?domain=' . urlencode($productName) . '.com&sz=128',
+                    'icon'            => $info['icon'] ?? null,
                     'color'           => $info['color'] ?? '#33CCFF',
                     'category'        => $info['category'] ?? 'Other',
                     'cost'            => round($suggestedCost, 2),
