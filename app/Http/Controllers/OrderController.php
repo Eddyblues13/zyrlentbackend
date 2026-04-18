@@ -415,6 +415,49 @@ class OrderController extends Controller
     }
 
 
+
+
+    /**
+     * Ban a number — reports it as banned by the platform (e.g. WhatsApp banned it).
+     * Cancels the order on 5sim side, refunds wallet.
+     */
+    public function ban(Request $request, NumberOrder $order)
+    {
+        if ($order->user_id !== $request->user()->id) {
+            return response()->json(['message' => 'Not found.'], 404);
+        }
+
+        if (!in_array($order->status, ['pending', 'completed'])) {
+            return response()->json(['message' => 'Only pending or completed orders can be banned.'], 422);
+        }
+
+        // Ban on 5sim side
+        if ($order->provider_slug === '5sim' && $order->provider_order_id) {
+            try {
+                $provider = ApiProvider::find($order->provider_id);
+                if ($provider) {
+                    $fiveSim = FiveSimService::fromProvider($provider);
+                    $fiveSim->banOrder((int) $order->provider_order_id);
+                    \Log::info("5SIM: Banned order #{$order->id} (5sim ID: {$order->provider_order_id})");
+                }
+            } catch (\Exception $e) {
+                \Log::warning("5SIM ban failed for order #{$order->id}: " . $e->getMessage());
+            }
+        }
+
+        // Refund wallet if not already refunded
+        if ($order->status !== 'cancelled') {
+            $this->refundOrder($order, $request->user());
+        }
+
+        $order->update(['status' => 'cancelled']);
+
+        return response()->json([
+            'message'        => 'Number reported as banned. Order cancelled and wallet refunded.',
+            'wallet_balance' => $request->user()->wallet?->fresh()?->total_balance,
+        ]);
+    }
+
     /**
      * Get available operators and their prices for a service+country combo from 5sim.
      */

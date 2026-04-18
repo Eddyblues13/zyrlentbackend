@@ -60,6 +60,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/orders', [OrderController::class, 'store']);
     Route::get('/orders/{order}', [OrderController::class, 'show']);
     Route::post('/orders/{order}/cancel', [OrderController::class, 'cancel']);
+    Route::post('/orders/{order}/ban', [OrderController::class, 'ban']);
 
     // Wallet
     Route::get('/wallet/balance', [WalletController::class, 'balance']);
