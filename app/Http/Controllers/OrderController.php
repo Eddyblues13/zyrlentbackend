@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\ApiProvider;
+use App\Models\ApiSetting;
 use App\Models\Country;
 use App\Models\NumberOrder;
 use App\Models\Service;
@@ -49,21 +50,18 @@ class OrderController extends Controller
         $request->validate([
             'service_id' => 'required|exists:services,id',
             'country_id' => 'required|exists:countries,id',
-            'operator' => 'nullable|string|max:50',
+            'operator'   => 'nullable|string|max:50',
         ]);
 
         $service = Service::findOrFail($request->service_id);
         $country = Country::findOrFail($request->country_id);
+        $operator = $request->input('operator', 'any');
 
-        $serviceCost  = (float) ($service->cost ?? 0);
-        $countryPrice = $this->resolveCountryPrice($country);
-        $total = $serviceCost + $countryPrice;
+        $total = $this->resolveDynamicPrice($service, $country, $operator);
 
         return response()->json([
-            'service_cost'  => $serviceCost,
-            'country_price' => $countryPrice,
-            'total'         => $total,
-            'currency'      => 'NGN',
+            'total'    => $total,
+            'currency' => 'NGN',
         ]);
     }
 
@@ -86,9 +84,9 @@ class OrderController extends Controller
         $country = Country::findOrFail($validated['country_id']);
 
         // --- Calculate total cost: service price + country price ---
-        $serviceCost = (float) $service->cost;
-        $countryPrice = $this->resolveCountryPrice($country);
-        $cost = $serviceCost + $countryPrice;
+        
+        $operator = $validated['operator'] ?? 'any';
+        $cost = $this->resolveDynamicPrice($service, $country, $operator);
 
         if ($cost <= 0) {
             return response()->json(['message' => 'Pricing not configured for this combination. Please contact support.'], 422);
@@ -273,19 +271,7 @@ class OrderController extends Controller
 
     // --- Helpers ---
 
-    /**
-     * Resolve country price in NGN — uses direct price field, falls back to USD conversion.
-     */
-    private function resolveCountryPrice(Country $country): float
-    {
-        if ($country->price && (float) $country->price > 0) {
-            return (float) $country->price;
-        }
-        if ($country->price_usd && (float) $country->price_usd > 0) {
-            return round((float) $country->price_usd * 1600, 0);
-        }
-        return 0.0;
-    }
+    
 
     /**
      * Poll 5sim API to check if SMS has been received for a pending order.
