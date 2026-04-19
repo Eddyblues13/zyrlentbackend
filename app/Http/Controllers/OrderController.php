@@ -495,4 +495,86 @@ class OrderController extends Controller
             return response()->json(['operators' => [['name' => 'any', 'cost' => 0, 'count' => 0, 'rate' => 0]]]);
         }
     }
+
+    /**
+     * Fetch the real operator cost from 5sim and convert to NGN with markup.
+     */
+    private function resolveDynamicPrice(Service $service, Country $country, string $operator = 'any'): float
+    {
+        $rate   = (float) ApiSetting::getValue('usd_to_ngn_rate', 1500);
+        $markup = (float) ApiSetting::getValue('pricing_markup_percent', 0);
+
+        try {
+            $provider = ApiProvider::where('slug', '5sim')->where('is_active', true)->first();
+            if (!$provider) {
+                return $this->resolveCountryPriceFallback($country);
+            }
+
+            $fiveSim        = FiveSimService::fromProvider($provider);
+            $fiveSimCountry = FiveSimService::mapCountryCode($country->code);
+            $product        = FiveSimService::mapServiceToProduct($service->slug ?? $service->name);
+            $prices         = $fiveSim->getPrices($fiveSimCountry);
+
+            $productOperators = $prices[$fiveSimCountry][$product] ?? [];
+
+            if (empty($productOperators)) {
+                return $this->resolveCountryPriceFallback($country);
+            }
+
+            // Find the requested operator's cost
+            $costUsd = null;
+            if ($operator !== 'any' && isset($productOperators[$operator])) {
+                $costUsd = (float) ($productOperators[$operator]['cost'] ?? 0);
+            }
+
+            // Fallback: use 'any' operator or pick the cheapest with count > 0
+            if (!$costUsd || $costUsd <= 0) {
+                if (isset($productOperators['any']) && ($productOperators['any']['count'] ?? 0) > 0) {
+                    $costUsd = (float) ($productOperators['any']['cost'] ?? 0);
+                }
+                if (!$costUsd || $costUsd <= 0) {
+                    foreach ($productOperators as $opData) {
+                        $opCost = (float) ($opData['cost'] ?? 0);
+                        if ($opCost > 0 && ($opData['count'] ?? 0) > 0) {
+                            if ($costUsd === null || $opCost < $costUsd) {
+                                $costUsd = $opCost;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (!$costUsd || $costUsd <= 0) {
+                return $this->resolveCountryPriceFallback($country);
+            }
+
+            $baseNgn  = round($costUsd * $rate, 2);
+            $totalNgn = round($baseNgn * (1 + ($markup / 100)), 2);
+
+            return $totalNgn;
+
+        } catch (\Exception $e) {
+            \Log::warning("Dynamic pricing failed: " . $e->getMessage());
+            return $this->resolveCountryPriceFallback($country);
+        }
+    }
+
+    /**
+     * Fallback: use static country price if 5sim API is unavailable.
+     */
+    private function resolveCountryPriceFallback(Country $country): float
+    {
+        $rate   = (float) ApiSetting::getValue('usd_to_ngn_rate', 1500);
+        $markup = (float) ApiSetting::getValue('pricing_markup_percent', 0);
+
+        if ($country->price && (float) $country->price > 0) {
+            $base = (float) $country->price;
+            return round($base * (1 + ($markup / 100)), 2);
+        }
+        if ($country->price_usd && (float) $country->price_usd > 0) {
+            $base = round((float) $country->price_usd * $rate, 2);
+            return round($base * (1 + ($markup / 100)), 2);
+        }
+        return 0.0;
+    }
 }
