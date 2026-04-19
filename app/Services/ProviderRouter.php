@@ -300,8 +300,17 @@ class ProviderRouter
 
     /**
      * Cancel/finish a 5sim order (release number).
-     * If SMS was received (RECEIVED/FINISHED status), we finish it.
-     * If still pending, we cancel it to get refund on 5sim.
+     *
+     * 5sim status meanings:
+     *   PENDING  → order created, number not yet assigned
+     *   RECEIVED → number assigned, WAITING for SMS (NOT "SMS received")
+     *   FINISHED → order completed (SMS was received and confirmed)
+     *   CANCELED → order cancelled
+     *   BANNED   → number was banned
+     *   TIMEOUT  → order expired
+     *
+     * Only call finishOrder when actual SMS messages exist.
+     * Otherwise cancel the order to get a refund on 5sim.
      */
     private function release5SimNumber(ApiProvider $provider, string $orderId): void
     {
@@ -314,20 +323,21 @@ class ProviderRouter
             $fiveSim = FiveSimService::fromProvider($provider);
             $order = $fiveSim->checkOrder((int) $orderId);
             $status = $order['status'] ?? '';
+            $smsArray = $order['sms'] ?? [];
 
             if (in_array($status, ['FINISHED', 'CANCELED', 'BANNED', 'TIMEOUT'])) {
                 Log::info("5SIM: Order {$orderId} already in terminal state: {$status}");
                 return;
             }
 
-            if ($status === 'RECEIVED' || !empty($order['sms'])) {
-                // SMS was received — finish the order
+            if (!empty($smsArray)) {
+                // SMS was actually received — finish the order
                 $fiveSim->finishOrder((int) $orderId);
-                Log::info("5SIM: Finished order {$orderId}");
+                Log::info("5SIM: Finished order {$orderId} (SMS was received)");
             } else {
-                // No SMS — cancel the order (refund on 5sim side)
+                // No SMS received — cancel the order (refund on 5sim side)
                 $fiveSim->cancelOrder((int) $orderId);
-                Log::info("5SIM: Cancelled order {$orderId}");
+                Log::info("5SIM: Cancelled order {$orderId} (no SMS received, status was: {$status})");
             }
         } catch (\Exception $e) {
             Log::warning("5SIM: Failed to release order {$orderId}: {$e->getMessage()}");
@@ -571,6 +581,19 @@ class ProviderRouter
         $apiKey = $provider->getCredential('api_key');
         if (!$apiKey) throw new \Exception('SMSPVA API key not configured');
         throw new \Exception('SMSPVA provider integration coming soon');
+    }
+
+    // ── SMS-Activate (placeholder) ──
+    private function provisionSmsActivate(ApiProvider $provider, Country $country, ?string $serviceSlug = null, string $operator = 'any'): array
+    {
+        $apiKey = $provider->getCredential('api_key');
+        if (!$apiKey) throw new \Exception('SMS-Activate API key not configured');
+        throw new \Exception('SMS-Activate provider integration coming soon');
+    }
+
+    private function releaseSmsActivateNumber(ApiProvider $provider, string $orderId): void
+    {
+        Log::info("SMS-Activate release placeholder for order {$orderId}");
     }
 
     // ═══════════════════════════════════════════════════════
