@@ -47,6 +47,7 @@ class ApiSettingsController extends Controller
                 'total_successes' => (int) ($p->total_successes ?? 0),
                 'total_failures'  => (int) ($p->total_failures ?? 0),
                 'cost_multiplier' => (float) ($p->cost_multiplier ?? 1.00),
+                'markup_percent'  => (float) ($p->markup_percent ?? 0),
             ];
         });
 
@@ -135,6 +136,7 @@ class ApiSettingsController extends Controller
             'is_active'       => 'sometimes|boolean',
             'priority'        => 'sometimes|integer|min:1|max:999',
             'cost_multiplier' => 'sometimes|numeric|min:0.01|max:99.99',
+            'markup_percent'  => 'sometimes|numeric|min:0|max:1000',
         ]);
 
         if ($request->has('name')) {
@@ -172,6 +174,10 @@ class ApiSettingsController extends Controller
 
         if ($request->has('cost_multiplier')) {
             $provider->cost_multiplier = $request->cost_multiplier;
+        }
+
+        if ($request->has('markup_percent')) {
+            $provider->markup_percent = $request->markup_percent;
         }
 
         $provider->save();

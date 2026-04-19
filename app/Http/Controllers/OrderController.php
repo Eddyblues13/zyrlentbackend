@@ -501,8 +501,7 @@ class OrderController extends Controller
      */
     private function resolveDynamicPrice(Service $service, Country $country, string $operator = 'any'): float
     {
-        $rate   = (float) ApiSetting::getValue('usd_to_ngn_rate', 1500);
-        $markup = (float) ApiSetting::getValue('pricing_markup_percent', 0);
+        $rate = (float) ApiSetting::getValue('usd_to_ngn_rate', 1500);
 
         try {
             $provider = ApiProvider::where('slug', '5sim')->where('is_active', true)->first();
@@ -546,6 +545,12 @@ class OrderController extends Controller
 
             if (!$costUsd || $costUsd <= 0) {
                 return $this->resolveCountryPriceFallback($country);
+            }
+
+            // Use per-provider markup, fall back to global setting
+            $markup = (float) ($provider->markup_percent ?? 0);
+            if ($markup <= 0) {
+                $markup = (float) ApiSetting::getValue('pricing_markup_percent', 0);
             }
 
             $baseNgn  = round($costUsd * $rate, 2);

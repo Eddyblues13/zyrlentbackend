@@ -13,7 +13,7 @@ class ApiProvider extends Model
         // Routing fields
         'priority', 'success_rate', 'avg_response_ms',
         'total_requests', 'total_successes', 'total_failures',
-        'cost_multiplier', 'routing_mode',
+        'cost_multiplier', 'markup_percent', 'routing_mode',
     ];
 
     protected $casts = [
@@ -27,6 +27,7 @@ class ApiProvider extends Model
         'total_successes' => 'integer',
         'total_failures'  => 'integer',
         'cost_multiplier' => 'decimal:2',
+        'markup_percent' => 'decimal:2',
     ];
 
     /* ── Encrypt credentials on set ── */
