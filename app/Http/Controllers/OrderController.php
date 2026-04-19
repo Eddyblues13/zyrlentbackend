@@ -224,11 +224,18 @@ class OrderController extends Controller
             return response()->json(['message' => 'Not found.'], 404);
         }
 
+        $providerInfo = null;
+
         // IMPORTANT: Poll provider for SMS FIRST, before checking local expiry.
         // The provider may have received SMS even after our local timer expired.
         if ($order->status === 'pending' && $order->provider_slug === '5sim' && $order->provider_order_id) {
-            $this->poll5SimForSms($order);
+            $providerInfo = $this->poll5SimForSms($order);
             $order->refresh(); // Reload — poll may have updated status/otp_code
+        }
+
+        // For non-pending 5sim orders, still fetch provider info for display
+        if (!$providerInfo && $order->provider_slug === '5sim' && $order->provider_order_id) {
+            $providerInfo = $this->fetch5SimProviderInfo($order);
         }
 
         // Auto-expire if still pending and past due (only after provider poll found nothing)
@@ -241,7 +248,11 @@ class OrderController extends Controller
 
         $order->load(['service:id,name,color,icon', 'country:id,name,flag,dial_code']);
 
-        return response()->json($order);
+        // Append provider info to the response
+        $response = $order->toArray();
+        $response['provider_info'] = $providerInfo;
+
+        return response()->json($response);
     }
 
     /**
@@ -277,8 +288,9 @@ class OrderController extends Controller
 
     /**
      * Poll 5sim API to check if SMS has been received for a pending order.
+     * Returns provider info array for the frontend.
      */
-    private function poll5SimForSms(NumberOrder $order): void
+    private function poll5SimForSms(NumberOrder $order): ?array
     {
         try {
             $router = new ProviderRouter();
@@ -287,7 +299,7 @@ class OrderController extends Controller
                 $order->provider_id
             );
 
-            if (!$fiveSimData) return;
+            if (!$fiveSimData) return null;
 
             $fiveSimStatus = $fiveSimData['status'] ?? '';
             $smsArray = $fiveSimData['sms'] ?? [];
@@ -346,9 +358,77 @@ class OrderController extends Controller
                 \Log::info("5SIM order #{$order->id} cancelled on 5sim side (status: {$fiveSimStatus})");
             }
 
+            // Build provider info for frontend
+            return $this->build5SimProviderInfo($fiveSimData);
+
         } catch (\Exception $e) {
             \Log::warning("5SIM poll failed for order #{$order->id}: {$e->getMessage()}");
+            return null;
         }
+    }
+
+    /**
+     * Fetch provider info from 5sim for non-pending orders (completed/expired/cancelled).
+     * Wrapped in try-catch so it never breaks the response.
+     */
+    private function fetch5SimProviderInfo(NumberOrder $order): ?array
+    {
+        try {
+            $router = new ProviderRouter();
+            $fiveSimData = $router->check5SimOrder(
+                $order->provider_order_id,
+                $order->provider_id
+            );
+            if (!$fiveSimData) return null;
+            return $this->build5SimProviderInfo($fiveSimData);
+        } catch (\Exception $e) {
+            return null;
+        }
+    }
+
+    /**
+     * Build a normalized provider_info payload from raw 5sim API data.
+     */
+    private function build5SimProviderInfo(array $data): array
+    {
+        $status = $data['status'] ?? 'UNKNOWN';
+        $smsArray = $data['sms'] ?? [];
+        $smsArray = is_array($smsArray) ? $smsArray : [];
+
+        // Map 5sim statuses to user-friendly labels
+        $statusMap = [
+            'PENDING'  => ['label' => 'Preparing Number',   'color' => 'amber'],
+            'RECEIVED' => ['label' => 'Active — Waiting for SMS', 'color' => 'emerald'],
+            'FINISHED' => ['label' => 'Completed',          'color' => 'blue'],
+            'CANCELED' => ['label' => 'Cancelled',          'color' => 'red'],
+            'BANNED'   => ['label' => 'Number Banned',      'color' => 'red'],
+            'TIMEOUT'  => ['label' => 'Expired',            'color' => 'red'],
+        ];
+
+        $mapped = $statusMap[$status] ?? ['label' => $status, 'color' => 'gray'];
+
+        return [
+            'provider'        => '5SIM',
+            'status'          => $status,
+            'status_label'    => $mapped['label'],
+            'status_color'    => $mapped['color'],
+            'phone'           => $data['phone'] ?? null,
+            'operator'        => $data['operator'] ?? null,
+            'product'         => $data['product'] ?? null,
+            'provider_price'  => $data['price'] ?? null,
+            'expires_at'      => $data['expires'] ?? null,
+            'created_at'      => $data['created_at'] ?? null,
+            'country'         => $data['country'] ?? null,
+            'sms_count'       => count($smsArray),
+            'sms'             => array_map(function ($sms) {
+                return [
+                    'sender'     => $sms['sender'] ?? null,
+                    'text'       => $sms['text'] ?? null,
+                    'code'       => $sms['code'] ?? null,
+                    'received_at' => $sms['date'] ?? $sms['created_at'] ?? null,
+                ];
+            }, $smsArray),
+        ];
     }
 
     /**
