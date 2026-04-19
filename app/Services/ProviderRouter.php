@@ -129,6 +129,7 @@ class ProviderRouter
                 '5sim'    => $this->release5SimNumber($provider, $providerOrderId ?? $providerSid),
                 'plivo'   => $this->releasePlivoNumber($provider, $providerSid),
                 'vonage'  => $this->releaseVonageNumber($provider, $providerSid),
+                'sms_activate' => $this->releaseSmsActivateNumber($provider, $providerOrderId ?? $providerSid),
                 default   => Log::warning("No release handler for provider type: {$provider->type}"),
             };
         } catch (\Exception $e) {
@@ -249,6 +250,7 @@ class ProviderRouter
             'plivo'   => $this->provisionPlivo($provider, $country),
             'vonage'  => $this->provisionVonage($provider, $country),
             'smspva'  => $this->provisionSmsPva($provider, $country),
+            'sms_activate' => $this->provisionSmsActivate($provider, $country, $serviceSlug, $operator),
             default   => throw new \Exception("Unsupported provider type: {$provider->type}"),
         };
     }
