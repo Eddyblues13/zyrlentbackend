@@ -123,9 +123,12 @@ class User extends Authenticatable
      */
     public function sendPasswordResetNotification($token)
     {
-        $frontendUrl = config('app.frontend_url', 'https://www.zyrlent.com');
-        $url = $frontendUrl . '/reset-password?token=' . $token . '&email=' . urlencode($this->email);
+        $frontendUrl = rtrim(config('app.frontend_url', 'https://www.zyrlent.com'), '/');
 
-        $this->notify(new \Illuminate\Auth\Notifications\ResetPassword($url));
+        \Illuminate\Auth\Notifications\ResetPassword::createUrlUsing(function ($notifiable, $token) use ($frontendUrl) {
+            return $frontendUrl . '/reset-password?token=' . $token . '&email=' . urlencode($notifiable->getEmailForPasswordReset());
+        });
+
+        $this->notify(new \Illuminate\Auth\Notifications\ResetPassword($token));
     }
 }
