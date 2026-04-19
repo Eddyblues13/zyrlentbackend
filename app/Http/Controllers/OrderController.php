@@ -172,7 +172,7 @@ class OrderController extends Controller
                     'twilio_sid'           => $allocation['provider_sid'],
                     'status'               => 'pending',
                     'cost'                 => $cost,
-                    'expires_at'           => now()->addMinutes((int) env('NUMBER_EXPIRY_MINUTES', 15)),
+                    'expires_at'           => now()->addMinutes((int) env('NUMBER_EXPIRY_MINUTES', 20)),
                     'ip_address'           => $request->ip(),
                     'user_agent'           => $request->userAgent(),
                     // Provider routing metadata
@@ -224,17 +224,19 @@ class OrderController extends Controller
             return response()->json(['message' => 'Not found.'], 404);
         }
 
-        // Auto-expire if past due
+        // IMPORTANT: Poll provider for SMS FIRST, before checking local expiry.
+        // The provider may have received SMS even after our local timer expired.
+        if ($order->status === 'pending' && $order->provider_slug === '5sim' && $order->provider_order_id) {
+            $this->poll5SimForSms($order);
+            $order->refresh(); // Reload — poll may have updated status/otp_code
+        }
+
+        // Auto-expire if still pending and past due (only after provider poll found nothing)
         if ($order->status === 'pending' && $order->isExpired()) {
             $order->update(['status' => 'expired']);
             $this->releaseNumber($order);
             $this->releaseInternalNumber($order);
             $this->refundOrder($order, $request->user());
-        }
-
-        // For 5sim orders that are still pending: poll 5sim for SMS
-        if ($order->status === 'pending' && $order->provider_slug === '5sim' && $order->provider_order_id) {
-            $this->poll5SimForSms($order);
         }
 
         $order->load(['service:id,name,color,icon', 'country:id,name,flag,dial_code']);
