@@ -96,11 +96,69 @@ class ProviderRouter
             }
         }
 
-        // All providers exhausted
+        // All providers exhausted — analyze errors for a helpful message
         Log::error("ProviderRouter: All providers exhausted for country {$country->code}", $routingLog);
-        throw new \Exception(
-            'No numbers available for the selected country right now. Please try again later.'
+
+        $errorMessage = $this->diagnoseAllocationFailure($routingLog, $providers);
+        throw new \Exception($errorMessage);
+    }
+
+    /**
+     * Analyze the routing log to provide a specific, user-friendly error message.
+     */
+    private function diagnoseAllocationFailure(array $routingLog, $providers): string
+    {
+        $errors = array_column(
+            array_filter($routingLog, fn($entry) => ($entry['status'] ?? '') === 'failed'),
+            'error'
         );
+        $allErrors = strtolower(implode(' | ', $errors));
+
+        // Check for insufficient provider balance
+        if (str_contains($allErrors, 'not enough user balance') ||
+            str_contains($allErrors, 'not enough balance') ||
+            str_contains($allErrors, 'insufficient balance') ||
+            str_contains($allErrors, 'low balance')) {
+            return 'Service temporarily unavailable — provider balance is insufficient. Our team has been notified. Please try again later.';
+        }
+
+        // Check for no available numbers
+        if (str_contains($allErrors, 'no free phones') ||
+            str_contains($allErrors, 'no phones') ||
+            str_contains($allErrors, 'no numbers available')) {
+            return 'No numbers available for the selected country and service right now. Please try a different country or try again later.';
+        }
+
+        // Check for API key / auth issues
+        if (str_contains($allErrors, 'unauthorized') ||
+            str_contains($allErrors, 'invalid api key') ||
+            str_contains($allErrors, 'api key not configured') ||
+            str_contains($allErrors, '401')) {
+            return 'Service temporarily unavailable — provider authentication issue. Our team has been notified.';
+        }
+
+        // Check for rate limiting
+        if (str_contains($allErrors, 'rate limit') ||
+            str_contains($allErrors, 'too many requests') ||
+            str_contains($allErrors, '429')) {
+            return 'Too many requests — please wait a moment and try again.';
+        }
+
+        // Check for product / country not supported
+        if (str_contains($allErrors, 'bad country') ||
+            str_contains($allErrors, 'bad product') ||
+            str_contains($allErrors, 'bad operator') ||
+            str_contains($allErrors, 'product not found')) {
+            return 'This service is not available for the selected country. Please choose a different country.';
+        }
+
+        // Check if no providers are configured at all
+        if (count($providers) === 0) {
+            return 'No number providers are currently active. Please contact support.';
+        }
+
+        // Generic fallback
+        return 'No numbers available for the selected country right now. Please try again later.';
     }
 
     /**
