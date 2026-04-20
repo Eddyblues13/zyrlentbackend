@@ -11,3 +11,6 @@ Artisan::command('inspire', function () {
 // Expire pending orders every minute — releases Twilio numbers and refunds wallets
 Schedule::command('orders:expire')->everyMinute();
 
+// Poll 5sim for OTP codes and status changes on pending orders every 30 seconds
+Schedule::command('orders:sync-provider')->everyThirtySeconds();
+
