@@ -2,20 +2,21 @@
 
 namespace App\Console\Commands;
 
-use App\Models\ApiSetting;
 use App\Models\NumberOrder;
+use App\Services\FiveSimService;
 use Illuminate\Console\Command;
-use Twilio\Rest\Client as TwilioClient;
+use Illuminate\Support\Facades\Log;
 
 class ExpireOrders extends Command
 {
     protected $signature = 'orders:expire';
-    protected $description = 'Expire pending orders past their expiry time, release Twilio numbers, and refund wallets';
+    protected $description = 'Expire pending orders past their expiry time, cancel on 5sim, and refund wallets';
 
-    public function handle()
+    public function handle(): int
     {
         $expiredOrders = NumberOrder::where('status', 'pending')
             ->where('expires_at', '<', now())
+            ->with(['user.wallet', 'provider'])
             ->get();
 
         if ($expiredOrders->isEmpty()) {
@@ -23,32 +24,22 @@ class ExpireOrders extends Command
             return 0;
         }
 
-        $twilioSid   = ApiSetting::getValue('twilio_account_sid', env('TWILIO_ACCOUNT_SID'));
-        $twilioToken = ApiSetting::getValue('twilio_auth_token', env('TWILIO_AUTH_TOKEN'));
-        $twilio      = null;
-
-        if ($twilioSid && $twilioToken) {
-            try {
-                $twilio = new TwilioClient($twilioSid, $twilioToken);
-            } catch (\Exception $e) {
-                $this->error('Failed to create Twilio client: ' . $e->getMessage());
-            }
-        }
-
         $count = 0;
 
         foreach ($expiredOrders as $order) {
-            // 1. Release Twilio number
-            if ($order->twilio_sid && $twilio) {
+            // 1. Cancel order on 5sim (refunds 5sim balance)
+            if ($order->provider_order_id && $order->provider) {
                 try {
-                    $twilio->incomingPhoneNumbers($order->twilio_sid)->delete();
-                    $this->line("  Released: {$order->phone_number}");
+                    $fiveSim = FiveSimService::fromProvider($order->provider);
+                    $fiveSim->cancelOrder((int) $order->provider_order_id);
+                    $this->line("  Cancelled on 5sim: order #{$order->id}");
                 } catch (\Exception $e) {
-                    $this->warn("  Failed to release {$order->phone_number}: " . $e->getMessage());
+                    Log::warning("ExpireOrders: Failed to cancel 5sim order #{$order->id}: {$e->getMessage()}");
+                    $this->warn("  Failed to cancel 5sim order #{$order->id}: {$e->getMessage()}");
                 }
             }
 
-            // 2. Refund wallet
+            // 2. Refund user wallet
             $user = $order->user;
             if ($user && $order->cost > 0) {
                 $wallet = $user->wallet;
@@ -62,8 +53,7 @@ class ExpireOrders extends Command
 
             // 3. Mark expired
             $order->update([
-                'status'     => 'expired',
-                'twilio_sid' => null,
+                'status' => 'expired',
             ]);
 
             $count++;

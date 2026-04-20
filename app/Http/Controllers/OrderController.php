@@ -436,12 +436,13 @@ class OrderController extends Controller
      */
     private function releaseNumber(NumberOrder $order): void
     {
-        if (!$order->twilio_sid) return;
+        // Skip if no provider info to release
+        if (!$order->provider_order_id && !$order->twilio_sid) return;
 
         try {
             $router = new ProviderRouter();
             $router->releaseNumber(
-                $order->twilio_sid,
+                $order->provider_order_id ?? $order->twilio_sid,
                 $order->provider_id,
                 $order->provider_slug,
                 $order->provider_order_id

@@ -7,6 +7,7 @@ use App\Models\NumberOrder;
 use App\Services\FiveSimService;
 use App\Services\ProviderRouter;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 class SyncProviderOrders extends Command
@@ -19,6 +20,7 @@ class SyncProviderOrders extends Command
         $pendingOrders = NumberOrder::where('status', 'pending')
             ->where('provider_slug', '5sim')
             ->whereNotNull('provider_order_id')
+            ->where('expires_at', '>', now()) // Skip orders that are about to be expired by orders:expire
             ->with(['user.wallet', 'provider'])
             ->get();
 
