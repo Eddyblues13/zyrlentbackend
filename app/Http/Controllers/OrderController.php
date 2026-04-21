@@ -206,11 +206,30 @@ class OrderController extends Controller
 
         $order->load(['service:id,name,color,icon', 'country:id,name,flag,dial_code']);
 
-        return response()->json([
+        // Immediately poll 5sim once to capture very-fast OTPs that may have arrived
+        $providerInfo = null;
+        if ($order->provider_slug === '5sim' && $order->provider_order_id) {
+            try {
+                $providerInfo = $this->poll5SimForSms($order);
+                // Reload order to pick up any updates made by the poll
+                $order->refresh();
+            } catch (\Exception $e) {
+                // Swallow exceptions here so allocation doesn't fail on a transient provider check
+                \Log::warning("Immediate 5SIM poll failed for order #{$order->id}: {$e->getMessage()}");
+            }
+        }
+
+        $response = [
             'message'        => 'Number successfully provisioned. Waiting for OTP…',
             'order'          => $order,
             'wallet_balance' => $wallet->fresh()->total_balance,
-        ], 201);
+        ];
+
+        if ($providerInfo) {
+            $response['provider_info'] = $providerInfo;
+        }
+
+        return response()->json($response, 201);
     }
 
     /**
