@@ -7,6 +7,7 @@ use App\Models\ApiSetting;
 use App\Models\Country;
 use App\Models\NumberOrder;
 use App\Models\Service;
+use App\Models\Transaction;
 use App\Services\FiveSimService;
 use App\Services\ProviderRouter;
 use Illuminate\Http\Request;
@@ -264,14 +265,22 @@ class OrderController extends Controller
             return response()->json(['message' => 'Not found.'], 404);
         }
 
-        if (!in_array($order->status, ['pending'])) {
+        // If already cancelled or expired, return success (idempotent)
+        if (in_array($order->status, ['cancelled', 'expired'])) {
+            return response()->json([
+                'message' => 'Order already cancelled or expired.',
+                'wallet_balance' => $request->user()->wallet?->fresh()?->total_balance,
+            ]);
+        }
+
+        if ($order->status !== 'pending') {
             return response()->json(['message' => 'Only pending orders can be cancelled.'], 422);
         }
 
+        // Release resources and refund (refundOrder now guards against duplicate refunds)
         $this->releaseNumber($order);
         $this->releaseInternalNumber($order);
 
-        // Refund wallet
         $this->refundOrder($order, $request->user());
 
         $order->update(['status' => 'cancelled']);
@@ -458,6 +467,23 @@ class OrderController extends Controller
      */
     private function refundOrder(NumberOrder $order, $user): void
     {
+        // Guard: only refund once. Check for an existing credit transaction for this order.
+        try {
+            $alreadyRefunded = Transaction::where('type', 'credit')
+                ->where('meta->order_id', $order->id)
+                ->exists();
+        } catch (\Exception $e) {
+            // In case the JSON operator isn't supported on this DB driver, fall back to scanning by description
+            $alreadyRefunded = Transaction::where('type', 'credit')
+                ->where('description', 'like', "%Refund: {$order->order_ref}%")
+                ->exists();
+        }
+
+        if ($alreadyRefunded) {
+            \Log::info("Refund skipped for order #{$order->id} — already refunded.");
+            return;
+        }
+
         $wallet = $user->wallet;
         if ($wallet && $order->cost > 0) {
             $wallet->credit((float) $order->cost, "Refund: {$order->order_ref}", [
@@ -494,6 +520,14 @@ class OrderController extends Controller
     {
         if ($order->user_id !== $request->user()->id) {
             return response()->json(['message' => 'Not found.'], 404);
+        }
+
+        // Idempotent: if already cancelled/expired, return success
+        if (in_array($order->status, ['cancelled', 'expired'])) {
+            return response()->json([
+                'message' => 'Order already cancelled or expired.',
+                'wallet_balance' => $request->user()->wallet?->fresh()?->total_balance,
+            ]);
         }
 
         if (!in_array($order->status, ['pending', 'completed'])) {
