@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Events\OtpReceived;
 use App\Models\ApiProvider;
 use App\Models\ApiSetting;
 use App\Models\Country;
@@ -12,6 +13,7 @@ use App\Services\FiveSimService;
 use App\Services\ProviderRouter;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 class OrderController extends Controller
@@ -217,6 +219,24 @@ class OrderController extends Controller
                 // Swallow exceptions here so allocation doesn't fail on a transient provider check
                 \Log::warning("Immediate 5SIM poll failed for order #{$order->id}: {$e->getMessage()}");
             }
+
+            // Retry up to 3 more times (600 ms apart) if OTP has not yet arrived.
+            // 5SIM often delivers the SMS within 1–2 seconds of activation.
+            if ($order->status === 'pending' && !$order->otp_code) {
+                for ($i = 0; $i < 3; $i++) {
+                    usleep(600_000); // 600 ms
+                    try {
+                        $providerInfo = $this->poll5SimForSms($order);
+                        $order->refresh();
+                    } catch (\Exception $e) {
+                        \Log::warning("5SIM retry poll #{$i} failed for order #{$order->id}: {$e->getMessage()}");
+                    }
+                    // Stop retrying once OTP or terminal status is reached
+                    if ($order->otp_code || !in_array($order->status, ['pending'])) {
+                        break;
+                    }
+                }
+            }
         }
 
         $response = [
@@ -351,6 +371,14 @@ class OrderController extends Controller
                 ]);
 
                 \Log::info("5SIM OTP received for order #{$order->id}: code={$otpCode}, sender={$smsSender}");
+
+                // 🔔 Broadcast instantly to the frontend via Reverb websocket
+                try {
+                    $order->refresh();
+                    OtpReceived::dispatch($order);
+                } catch (\Exception $broadcastEx) {
+                    \Log::warning("OtpReceived broadcast failed for order #{$order->id}: {$broadcastEx->getMessage()}");
+                }
 
                 // Track success on the provider
                 if ($order->provider_id) {

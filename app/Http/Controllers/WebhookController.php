@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Events\OtpReceived;
 use App\Models\ApiProvider;
 use App\Models\ApiSetting;
 use App\Models\NumberOrder;
@@ -77,6 +78,14 @@ class WebhookController extends Controller
                 ]);
 
                 \Log::info("OTP saved for order #{$order->id}: {$body}");
+
+                // 🔔 Push to frontend instantly via Reverb websocket
+                try {
+                    $order->refresh();
+                    OtpReceived::dispatch($order);
+                } catch (\Exception $broadcastEx) {
+                    \Log::warning("OtpReceived broadcast failed (Twilio webhook) for order #{$order->id}: {$broadcastEx->getMessage()}");
+                }
 
                 // Track success on the provider
                 if ($order->provider_id) {
@@ -241,6 +250,14 @@ class WebhookController extends Controller
                 ]);
 
                 \Log::info("Telnyx OTP saved for order #{$order->id}: {$body}");
+
+                // 🔔 Push to frontend instantly via Reverb websocket
+                try {
+                    $order->refresh();
+                    OtpReceived::dispatch($order);
+                } catch (\Exception $broadcastEx) {
+                    \Log::warning("OtpReceived broadcast failed (Telnyx webhook) for order #{$order->id}: {$broadcastEx->getMessage()}");
+                }
 
                 // Track success on the provider
                 if ($order->provider_id) {
