@@ -208,34 +208,14 @@ class OrderController extends Controller
 
         $order->load(['service:id,name,color,icon', 'country:id,name,flag,dial_code']);
 
-        // Immediately poll 5sim once to capture very-fast OTPs that may have arrived
-        $providerInfo = null;
+        // Quick single poll — check if 5sim already has the OTP (some arrive instantly).
+        // Don't retry here — let the frontend polling + cron job handle detection.
         if ($order->provider_slug === '5sim' && $order->provider_order_id) {
             try {
-                $providerInfo = $this->poll5SimForSms($order);
-                // Reload order to pick up any updates made by the poll
+                $this->poll5SimForSms($order);
                 $order->refresh();
             } catch (\Exception $e) {
-                // Swallow exceptions here so allocation doesn't fail on a transient provider check
                 \Log::warning("Immediate 5SIM poll failed for order #{$order->id}: {$e->getMessage()}");
-            }
-
-            // Retry up to 3 more times (600 ms apart) if OTP has not yet arrived.
-            // 5SIM often delivers the SMS within 1–2 seconds of activation.
-            if ($order->status === 'pending' && !$order->otp_code) {
-                for ($i = 0; $i < 3; $i++) {
-                    usleep(600_000); // 600 ms
-                    try {
-                        $providerInfo = $this->poll5SimForSms($order);
-                        $order->refresh();
-                    } catch (\Exception $e) {
-                        \Log::warning("5SIM retry poll #{$i} failed for order #{$order->id}: {$e->getMessage()}");
-                    }
-                    // Stop retrying once OTP or terminal status is reached
-                    if ($order->otp_code || !in_array($order->status, ['pending'])) {
-                        break;
-                    }
-                }
             }
         }
 
@@ -245,18 +225,18 @@ class OrderController extends Controller
             'wallet_balance' => $wallet->fresh()->total_balance,
         ];
 
-        if ($providerInfo) {
-            $response['provider_info'] = $providerInfo;
-        }
-
         return response()->json($response, 201);
     }
 
     /**
      * Get a single order — used for polling OTP status.
      *
-     * For 5sim orders: actively polls the 5sim API to check for SMS,
-     * then updates the local order if SMS was received.
+     * PERFORMANCE: The frontend polls this every 2 seconds. To avoid hammering
+     * the 5sim API from shared hosting (which causes timeouts), we only call
+     * 5sim every ~6 seconds (every 3rd poll). The cron job `orders:sync-provider`
+     * also checks 5sim every minute as a background safety net.
+     *
+     * Most poll requests just return the DB data instantly.
      */
     public function show(Request $request, NumberOrder $order)
     {
@@ -264,21 +244,25 @@ class OrderController extends Controller
             return response()->json(['message' => 'Not found.'], 404);
         }
 
-        $providerInfo = null;
-
-        // IMPORTANT: Poll provider for SMS FIRST, before checking local expiry.
-        // The provider may have received SMS even after our local timer expired.
+        // Only actively poll 5sim for pending orders, and throttle to avoid
+        // overwhelming shared hosting with external API calls on every request
         if ($order->status === 'pending' && $order->provider_slug === '5sim' && $order->provider_order_id) {
-            $providerInfo = $this->poll5SimForSms($order);
-            $order->refresh(); // Reload — poll may have updated status/otp_code
+            // Throttle: only poll 5sim if we haven't checked in the last 5 seconds
+            $cacheKey = "5sim_poll_{$order->id}";
+            $lastPoll = cache()->get($cacheKey);
+
+            if (!$lastPoll || now()->diffInSeconds($lastPoll) >= 5) {
+                cache()->put($cacheKey, now(), 30); // TTL 30s
+                try {
+                    $this->poll5SimForSms($order);
+                    $order->refresh();
+                } catch (\Exception $e) {
+                    \Log::warning("5SIM poll throttled error for order #{$order->id}: {$e->getMessage()}");
+                }
+            }
         }
 
-        // For non-pending 5sim orders, still fetch provider info for display
-        if (!$providerInfo && $order->provider_slug === '5sim' && $order->provider_order_id) {
-            $providerInfo = $this->fetch5SimProviderInfo($order);
-        }
-
-        // Auto-expire if still pending and past due (only after provider poll found nothing)
+        // Auto-expire if still pending and past due
         if ($order->status === 'pending' && $order->isExpired()) {
             $order->update(['status' => 'expired']);
             $this->releaseNumber($order);
@@ -288,11 +272,7 @@ class OrderController extends Controller
 
         $order->load(['service:id,name,color,icon', 'country:id,name,flag,dial_code']);
 
-        // Append provider info to the response
-        $response = $order->toArray();
-        $response['provider_info'] = $providerInfo;
-
-        return response()->json($response);
+        return response()->json($order);
     }
 
     /**
