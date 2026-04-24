@@ -15,7 +15,7 @@ return [
     |
     */
 
-    'paths' => ['api/*', 'sanctum/csrf-cookie'],
+    'paths' => ['api/*', 'sanctum/csrf-cookie', 'broadcasting/auth'],
 
     'allowed_methods' => ['*'],
 
@@ -24,20 +24,20 @@ return [
         'http://localhost:5174',
         'http://localhost:5175',
         'https://www.zyrlent.com',
-        'https://www.zyrlent.com/',
         'https://zyrlent.com',
-        'https://zyrlent.com/',
         'https://api.zyrlent.com',
-        'https://api.zyrlent.com/',
     ],
 
-    'allowed_origins_patterns' => [],
+    'allowed_origins_patterns' => [
+        // Matches Vercel preview URLs like zyrlent-abc123.vercel.app
+        '#^https://zyrlent.*\.vercel\.app$#',
+    ],
 
     'allowed_headers' => ['*'],
 
     'exposed_headers' => [],
 
-    'max_age' => 0,
+    'max_age' => 86400,
 
     'supports_credentials' => true,
 

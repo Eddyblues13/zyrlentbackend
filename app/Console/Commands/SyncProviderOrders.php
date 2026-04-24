@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Events\OtpReceived;
 use App\Models\ApiProvider;
 use App\Models\NumberOrder;
 use App\Services\FiveSimService;
@@ -82,6 +83,14 @@ class SyncProviderOrders extends Command
 
             Log::info("SyncProviderOrders: OTP received for order #{$order->id}: code={$otpCode}");
             $this->line("  ✓ Order #{$order->id}: OTP received — {$otpCode}");
+
+            // 🔔 Broadcast instantly to frontend via Reverb websocket
+            try {
+                $order->refresh();
+                OtpReceived::dispatch($order);
+            } catch (\Exception $broadcastEx) {
+                Log::warning("SyncProviderOrders: OtpReceived broadcast failed for order #{$order->id}: {$broadcastEx->getMessage()}");
+            }
 
             // Track provider success
             if ($order->provider) {
