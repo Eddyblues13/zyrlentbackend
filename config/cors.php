@@ -26,6 +26,7 @@ return [
         'https://www.zyrlent.com',
         'https://zyrlent.com',
         'https://api.zyrlent.com',
+        'https://backend.zyrlent.com',
     ],
 
     'allowed_origins_patterns' => [
