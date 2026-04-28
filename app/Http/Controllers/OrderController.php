@@ -10,6 +10,7 @@ use App\Models\NumberOrder;
 use App\Models\Service;
 use App\Models\Transaction;
 use App\Services\FiveSimService;
+use App\Services\SmsPoolService;
 use App\Services\ProviderRouter;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -208,14 +209,23 @@ class OrderController extends Controller
 
         $order->load(['service:id,name,color,icon', 'country:id,name,flag,dial_code']);
 
-        // Quick single poll — check if 5sim already has the OTP (some arrive instantly).
+        // Quick single poll — check if provider already has the OTP (some arrive instantly).
         // Don't retry here — let the frontend polling + cron job handle detection.
-        if ($order->provider_slug === '5sim' && $order->provider_order_id) {
-            try {
-                $this->poll5SimForSms($order);
-                $order->refresh();
-            } catch (\Exception $e) {
-                \Log::warning("Immediate 5SIM poll failed for order #{$order->id}: {$e->getMessage()}");
+        if ($order->provider_order_id) {
+            if ($order->provider_slug === '5sim') {
+                try {
+                    $this->poll5SimForSms($order);
+                    $order->refresh();
+                } catch (\Exception $e) {
+                    \Log::warning("Immediate 5SIM poll failed for order #{$order->id}: {$e->getMessage()}");
+                }
+            } elseif ($order->provider_slug === 'smspool') {
+                try {
+                    $this->pollSmsPoolForSms($order);
+                    $order->refresh();
+                } catch (\Exception $e) {
+                    \Log::warning("Immediate SMSPool poll failed for order #{$order->id}: {$e->getMessage()}");
+                }
             }
         }
 
@@ -244,20 +254,36 @@ class OrderController extends Controller
             return response()->json(['message' => 'Not found.'], 404);
         }
 
-        // Only actively poll 5sim for pending orders, and throttle to avoid
+        // Only actively poll providers for pending orders, and throttle to avoid
         // overwhelming shared hosting with external API calls on every request
-        if ($order->status === 'pending' && $order->provider_slug === '5sim' && $order->provider_order_id) {
-            // Throttle: only poll 5sim if we haven't checked in the last 5 seconds
-            $cacheKey = "5sim_poll_{$order->id}";
-            $lastPoll = cache()->get($cacheKey);
+        if ($order->status === 'pending' && $order->provider_order_id) {
+            if ($order->provider_slug === '5sim') {
+                // Throttle: only poll 5sim if we haven't checked in the last 5 seconds
+                $cacheKey = "5sim_poll_{$order->id}";
+                $lastPoll = cache()->get($cacheKey);
 
-            if (!$lastPoll || now()->diffInSeconds($lastPoll) >= 5) {
-                cache()->put($cacheKey, now(), 30); // TTL 30s
-                try {
-                    $this->poll5SimForSms($order);
-                    $order->refresh();
-                } catch (\Exception $e) {
-                    \Log::warning("5SIM poll throttled error for order #{$order->id}: {$e->getMessage()}");
+                if (!$lastPoll || now()->diffInSeconds($lastPoll) >= 5) {
+                    cache()->put($cacheKey, now(), 30); // TTL 30s
+                    try {
+                        $this->poll5SimForSms($order);
+                        $order->refresh();
+                    } catch (\Exception $e) {
+                        \Log::warning("5SIM poll throttled error for order #{$order->id}: {$e->getMessage()}");
+                    }
+                }
+            } elseif ($order->provider_slug === 'smspool') {
+                // Throttle: only poll SMSPool if we haven't checked in the last 5 seconds
+                $cacheKey = "smspool_poll_{$order->id}";
+                $lastPoll = cache()->get($cacheKey);
+
+                if (!$lastPoll || now()->diffInSeconds($lastPoll) >= 5) {
+                    cache()->put($cacheKey, now(), 30); // TTL 30s
+                    try {
+                        $this->pollSmsPoolForSms($order);
+                        $order->refresh();
+                    } catch (\Exception $e) {
+                        \Log::warning("SMSPool poll throttled error for order #{$order->id}: {$e->getMessage()}");
+                    }
                 }
             }
         }
@@ -468,6 +494,129 @@ class OrderController extends Controller
     }
 
     /**
+     * Poll SMSPool API to check if SMS has been received for a pending order.
+     *
+     * SMSPool status codes:
+     *   1 = Pending, 2 = Expired, 3 = Completed, 4 = Resend,
+     *   5 = Cancelled, 6 = Refunded, 7 = Processing, 8 = Activating
+     */
+    private function pollSmsPoolForSms(NumberOrder $order): ?array
+    {
+        try {
+            $router = new ProviderRouter();
+            $smsPoolData = $router->checkSmsPoolOrder(
+                $order->provider_order_id,
+                $order->provider_id
+            );
+
+            if (!$smsPoolData) return null;
+
+            $statusCode = (int) ($smsPoolData['status'] ?? 0);
+            $statusName = SmsPoolService::mapStatusCode($statusCode);
+            $smsCode = $smsPoolData['code'] ?? '';
+            $smsText = $smsPoolData['sms'] ?? $smsPoolData['full_sms'] ?? '';
+            $phoneNumber = $smsPoolData['phonenumber'] ?? '';
+
+            // If SMS was received (status 3 = Completed)
+            if ($statusCode === 3 && ($smsCode || $smsText)) {
+                $otpCode = $smsCode ?: $smsText;
+
+                $order->update([
+                    'otp_code'     => $otpCode,
+                    'sms_from'     => 'SMSPool',
+                    'status'       => 'completed',
+                    'completed_at' => now(),
+                ]);
+
+                \Log::info("SMSPool OTP received for order #{$order->id}: code={$otpCode}");
+
+                // Broadcast instantly to the frontend via Reverb websocket
+                try {
+                    $order->refresh();
+                    OtpReceived::dispatch($order);
+                } catch (\Exception $broadcastEx) {
+                    \Log::warning("OtpReceived broadcast failed for order #{$order->id}: {$broadcastEx->getMessage()}");
+                }
+
+                // Track success on the provider
+                if ($order->provider_id) {
+                    $provider = ApiProvider::find($order->provider_id);
+                    if ($provider) {
+                        $provider->increment('total_successes');
+                    }
+                }
+            }
+
+            // If SMSPool order expired (status 2)
+            if ($statusCode === 2) {
+                $order->update(['status' => 'expired']);
+                $this->refundOrder($order, $order->user);
+                \Log::info("SMSPool order #{$order->id} expired (status: {$statusName})");
+            }
+
+            // If SMSPool order was cancelled or refunded (status 5 or 6)
+            if (in_array($statusCode, [5, 6])) {
+                $order->update(['status' => 'cancelled']);
+                $this->refundOrder($order, $order->user);
+                \Log::info("SMSPool order #{$order->id} cancelled/refunded (status: {$statusName})");
+            }
+
+            // Build provider info for frontend
+            return $this->buildSmsPoolProviderInfo($smsPoolData);
+
+        } catch (\Exception $e) {
+            \Log::warning("SMSPool poll failed for order #{$order->id}: {$e->getMessage()}");
+            return null;
+        }
+    }
+
+    /**
+     * Build a normalized provider_info payload from raw SMSPool API data.
+     */
+    private function buildSmsPoolProviderInfo(array $data): array
+    {
+        $statusCode = (int) ($data['status'] ?? 0);
+        $statusName = SmsPoolService::mapStatusCode($statusCode);
+
+        // Map SMSPool statuses to user-friendly labels
+        $statusMap = [
+            'PENDING'    => ['label' => 'Active — Waiting for SMS', 'color' => 'emerald'],
+            'EXPIRED'    => ['label' => 'Expired',                  'color' => 'red'],
+            'COMPLETED'  => ['label' => 'Completed',                'color' => 'blue'],
+            'RESEND'     => ['label' => 'Resending SMS',            'color' => 'amber'],
+            'CANCELLED'  => ['label' => 'Cancelled',                'color' => 'red'],
+            'REFUNDED'   => ['label' => 'Refunded',                 'color' => 'red'],
+            'PROCESSING' => ['label' => 'Processing',               'color' => 'amber'],
+            'ACTIVATING' => ['label' => 'Activating Number',        'color' => 'amber'],
+        ];
+
+        $mapped = $statusMap[$statusName] ?? ['label' => $statusName, 'color' => 'gray'];
+
+        return [
+            'provider'        => 'SMSPool',
+            'status'          => $statusName,
+            'status_label'    => $mapped['label'],
+            'status_color'    => $mapped['color'],
+            'phone'           => $data['phonenumber'] ?? null,
+            'operator'        => null,
+            'product'         => null,
+            'provider_price'  => null,
+            'expires_at'      => isset($data['expiration']) ? $data['expiration'] : null,
+            'created_at'      => null,
+            'country'         => $data['country'] ?? null,
+            'sms_count'       => !empty($data['sms'] ?? $data['code'] ?? '') ? 1 : 0,
+            'sms'             => !empty($data['code'] ?? $data['sms'] ?? '')
+                ? [[
+                    'sender'      => 'SMSPool',
+                    'text'        => $data['full_sms'] ?? $data['sms'] ?? null,
+                    'code'        => $data['code'] ?? null,
+                    'received_at' => now()->toIso8601String(),
+                ]]
+                : [],
+        ];
+    }
+
+    /**
      * Release a number back to its provider using the smart router.
      */
     private function releaseNumber(NumberOrder $order): void
@@ -572,6 +721,20 @@ class OrderController extends Controller
                 }
             } catch (\Exception $e) {
                 \Log::warning("5SIM ban failed for order #{$order->id}: " . $e->getMessage());
+            }
+        }
+
+        // Cancel on SMSPool side (SMSPool doesn't have a dedicated ban endpoint)
+        if ($order->provider_slug === 'smspool' && $order->provider_order_id) {
+            try {
+                $provider = ApiProvider::find($order->provider_id);
+                if ($provider) {
+                    $smsPool = SmsPoolService::fromProvider($provider);
+                    $smsPool->cancelOrder($order->provider_order_id);
+                    \Log::info("SMSPool: Cancelled order #{$order->id} (SMSPool ID: {$order->provider_order_id})");
+                }
+            } catch (\Exception $e) {
+                \Log::warning("SMSPool cancel failed for order #{$order->id}: " . $e->getMessage());
             }
         }
 

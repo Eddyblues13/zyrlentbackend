@@ -57,13 +57,14 @@ class ApiProvider extends Model
         if (empty($creds)) return false;
 
         return match ($this->type) {
-            'twilio' => !empty($creds['account_sid']) && !empty($creds['auth_token']),
-            '5sim'   => !empty($creds['api_key']),
-            'smspva' => !empty($creds['api_key']),
-            'telnyx' => !empty($creds['api_key']),
-            'plivo'  => !empty($creds['auth_id']) && !empty($creds['auth_token']),
-            'vonage' => !empty($creds['api_key']) && !empty($creds['api_secret']),
-            default  => !empty($creds),
+            'twilio'  => !empty($creds['account_sid']) && !empty($creds['auth_token']),
+            '5sim'    => !empty($creds['api_key']),
+            'smspool' => !empty($creds['api_key']),
+            'smspva'  => !empty($creds['api_key']),
+            'telnyx'  => !empty($creds['api_key']),
+            'plivo'   => !empty($creds['auth_id']) && !empty($creds['auth_token']),
+            'vonage'  => !empty($creds['api_key']) && !empty($creds['api_secret']),
+            default   => !empty($creds),
         };
     }
 
@@ -107,6 +108,9 @@ class ApiProvider extends Model
             'sms_activate' => [
                 ['key' => 'api_key', 'label' => 'API Key', 'placeholder' => 'Your SMS-Activate API key'],
             ],
+            'smspool' => [
+                ['key' => 'api_key', 'label' => 'API Key', 'placeholder' => 'Your SMSPool API key (32 characters)'],
+            ],
             default => [],
         };
     }
@@ -146,6 +150,7 @@ class ApiProvider extends Model
             ['type' => '5sim',          'name' => '5SIM',          'description' => 'Budget SMS verification provider.',                                      'capabilities' => ['countries', 'numbers', 'pricing']],
             ['type' => 'smspva',        'name' => 'SMSPVA',        'description' => 'SMS verification provider.',                                             'capabilities' => ['countries', 'numbers', 'pricing']],
             ['type' => 'sms_activate',  'name' => 'SMS-Activate',  'description' => 'Virtual numbers for SMS verification.',                                  'capabilities' => ['countries', 'numbers', 'pricing']],
+            ['type' => 'smspool',       'name' => 'SMSPool',        'description' => 'Budget SMS verification with global coverage. Fallback provider.',      'capabilities' => ['countries', 'numbers', 'pricing']],
         ];
     }
 

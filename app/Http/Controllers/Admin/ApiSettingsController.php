@@ -79,7 +79,7 @@ class ApiSettingsController extends Controller
     public function storeProvider(Request $request)
     {
         $request->validate([
-            'type'        => 'required|string|in:twilio,telnyx,plivo,vonage,5sim,smspva,sms_activate',
+            'type'        => 'required|string|in:twilio,telnyx,plivo,vonage,5sim,smspva,sms_activate,smspool',
             'name'        => 'required|string|max:100',
             'credentials' => 'required|array',
             'settings'    => 'nullable|array',

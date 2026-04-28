@@ -9,6 +9,7 @@ use App\Models\PhoneNumber;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Twilio\Rest\Client as TwilioClient;
+use App\Services\SmsPoolService;
 
 /**
  * Smart Provider Router
@@ -185,6 +186,7 @@ class ProviderRouter
                 'twilio'  => $this->releaseTwilioNumber($provider, $providerSid),
                 'telnyx'  => $this->releaseTelnyxNumber($provider, $providerSid),
                 '5sim'    => $this->release5SimNumber($provider, $providerOrderId ?? $providerSid),
+                'smspool' => $this->releaseSmsPoolNumber($provider, $providerOrderId ?? $providerSid),
                 'plivo'   => $this->releasePlivoNumber($provider, $providerSid),
                 'vonage'  => $this->releaseVonageNumber($provider, $providerSid),
                 'sms_activate' => $this->releaseSmsActivateNumber($provider, $providerOrderId ?? $providerSid),
@@ -212,6 +214,27 @@ class ProviderRouter
             return $fiveSim->checkOrder((int) $providerOrderId);
         } catch (\Exception $e) {
             Log::warning("5SIM check order failed for {$providerOrderId}: {$e->getMessage()}");
+            return null;
+        }
+    }
+
+    /**
+     * Check an SMSPool order for SMS (polling).
+     * Returns the order data from SMSPool including any received SMS.
+     */
+    public function checkSmsPoolOrder(string $providerOrderId, ?int $providerId = null): ?array
+    {
+        $provider = $providerId
+            ? ApiProvider::find($providerId)
+            : ApiProvider::where('type', 'smspool')->where('is_active', true)->first();
+
+        if (!$provider) return null;
+
+        try {
+            $smsPool = SmsPoolService::fromProvider($provider);
+            return $smsPool->checkSms($providerOrderId);
+        } catch (\Exception $e) {
+            Log::warning("SMSPool check order failed for {$providerOrderId}: {$e->getMessage()}");
             return null;
         }
     }
@@ -305,6 +328,7 @@ class ProviderRouter
             'twilio'  => $this->provisionTwilio($provider, $country),
             'telnyx'  => $this->provisionTelnyx($provider, $country),
             '5sim'    => $this->provision5Sim($provider, $country, $serviceSlug, $operator),
+            'smspool' => $this->provisionSmsPool($provider, $country, $serviceSlug),
             'plivo'   => $this->provisionPlivo($provider, $country),
             'vonage'  => $this->provisionVonage($provider, $country),
             'smspva'  => $this->provisionSmsPva($provider, $country),
@@ -399,6 +423,97 @@ class ProviderRouter
             }
         } catch (\Exception $e) {
             Log::warning("5SIM: Failed to release order {$orderId}: {$e->getMessage()}");
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════
+    //  SMSPOOL IMPLEMENTATION
+    // ═══════════════════════════════════════════════════════
+
+    /**
+     * Buy an SMS number via SMSPool.
+     *
+     * SMSPool uses numeric country IDs and service IDs.
+     * We map our ISO codes and service slugs to SMSPool's format.
+     */
+    private function provisionSmsPool(ApiProvider $provider, Country $country, ?string $serviceSlug = null): array
+    {
+        $smsPool = SmsPoolService::fromProvider($provider);
+
+        // Map country code to SMSPool country ID
+        $smsPoolCountryId = SmsPoolService::mapCountryCode($country->code);
+        if ($smsPoolCountryId === null) {
+            throw new \Exception("SMSPool: Country {$country->code} is not supported");
+        }
+
+        // Map service slug to SMSPool service ID
+        $smsPoolServiceId = $serviceSlug
+            ? SmsPoolService::mapServiceToId($serviceSlug)
+            : null;
+
+        if ($smsPoolServiceId === null) {
+            throw new \Exception("SMSPool: Service '{$serviceSlug}' is not mapped to an SMSPool service ID");
+        }
+
+        Log::info("SMSPool: Purchasing SMS for country_id={$smsPoolCountryId}, service_id={$smsPoolServiceId}");
+
+        // Purchase the SMS number
+        $result = $smsPool->purchaseSms($smsPoolCountryId, $smsPoolServiceId);
+
+        $phone = $result['number'] ?? null;
+        $orderId = $result['order_id'] ?? null;
+
+        if (!$phone || !$orderId) {
+            throw new \Exception('SMSPool returned invalid response — no phone number or order ID');
+        }
+
+        // Ensure phone number has + prefix
+        if (!str_starts_with($phone, '+')) {
+            $phone = '+' . $phone;
+        }
+
+        Log::info("SMSPool: Number purchased — phone={$phone}, orderId={$orderId}");
+
+        return [
+            'phone_number'      => $phone,
+            'provider_sid'      => (string) $orderId,
+            'provider_order_id' => (string) $orderId,
+        ];
+    }
+
+    /**
+     * Cancel/release an SMSPool order.
+     *
+     * Checks the current status before cancelling.
+     * Only cancels if the order is still pending (status 1) or processing (7/8).
+     */
+    private function releaseSmsPoolNumber(ApiProvider $provider, string $orderId): void
+    {
+        if (!$orderId) {
+            Log::warning("SMSPool: Cannot release — invalid order ID: {$orderId}");
+            return;
+        }
+
+        try {
+            $smsPool = SmsPoolService::fromProvider($provider);
+
+            // Check current status first
+            $order = $smsPool->checkSms($orderId);
+            $statusCode = (int) ($order['status'] ?? 0);
+            $statusName = SmsPoolService::mapStatusCode($statusCode);
+
+            // Already in a terminal state — nothing to do
+            if (SmsPoolService::isTerminalStatus($statusCode)) {
+                Log::info("SMSPool: Order {$orderId} already in terminal state: {$statusName}");
+                return;
+            }
+
+            // Cancel the order
+            $smsPool->cancelOrder($orderId);
+            Log::info("SMSPool: Cancelled order {$orderId} (previous status: {$statusName})");
+
+        } catch (\Exception $e) {
+            Log::warning("SMSPool: Failed to release order {$orderId}: {$e->getMessage()}");
         }
     }
 
