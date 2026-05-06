@@ -833,7 +833,7 @@ class OrderController extends Controller
                 $costUsd = (float) ($productOperators[$operator]['cost'] ?? 0);
             }
 
-            // Fallback: use 'any' operator or pick the cheapest with count > 0
+            // Fallback: use 'any' operator or pick the most expensive with count > 0
             if (!$costUsd || $costUsd <= 0) {
                 if (isset($productOperators['any']) && ($productOperators['any']['count'] ?? 0) > 0) {
                     $costUsd = (float) ($productOperators['any']['cost'] ?? 0);
@@ -842,7 +842,7 @@ class OrderController extends Controller
                     foreach ($productOperators as $opData) {
                         $opCost = (float) ($opData['cost'] ?? 0);
                         if ($opCost > 0 && ($opData['count'] ?? 0) > 0) {
-                            if ($costUsd === null || $opCost < $costUsd) {
+                            if ($costUsd === null || $opCost > $costUsd) {
                                 $costUsd = $opCost;
                             }
                         }
