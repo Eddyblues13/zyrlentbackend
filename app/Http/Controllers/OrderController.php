@@ -10,11 +10,10 @@ use App\Models\NumberOrder;
 use App\Models\Service;
 use App\Models\Transaction;
 use App\Services\FiveSimService;
-use App\Services\SmsPoolService;
 use App\Services\ProviderRouter;
+use App\Services\SmsPoolService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 class OrderController extends Controller
@@ -32,8 +31,8 @@ class OrderController extends Controller
             $query->where(function ($q) use ($search) {
                 $q->where('order_ref', 'like', "%{$search}%")
                     ->orWhere('phone_number', 'like', "%{$search}%")
-                    ->orWhereHas('service', fn($q2) => $q2->where('name', 'like', "%{$search}%"))
-                    ->orWhereHas('country', fn($q2) => $q2->where('name', 'like', "%{$search}%"));
+                    ->orWhereHas('service', fn ($q2) => $q2->where('name', 'like', "%{$search}%"))
+                    ->orWhereHas('country', fn ($q2) => $q2->where('name', 'like', "%{$search}%"));
             });
         }
 
@@ -54,7 +53,7 @@ class OrderController extends Controller
         $request->validate([
             'service_id' => 'required|exists:services,id',
             'country_id' => 'required|exists:countries,id',
-            'operator'   => 'nullable|string|max:50',
+            'operator' => 'nullable|string|max:50',
         ]);
 
         $service = Service::findOrFail($request->service_id);
@@ -64,7 +63,7 @@ class OrderController extends Controller
         $total = $this->resolveDynamicPrice($service, $country, $operator);
 
         return response()->json([
-            'total'    => $total,
+            'total' => $total,
             'currency' => 'NGN',
         ]);
     }
@@ -83,12 +82,12 @@ class OrderController extends Controller
             'operator' => 'nullable|string|max:50',
         ]);
 
-        $user    = $request->user();
+        $user = $request->user();
         $service = Service::findOrFail($validated['service_id']);
         $country = Country::findOrFail($validated['country_id']);
 
         // --- Calculate total cost: service price + country price ---
-        
+
         $operator = $validated['operator'] ?? 'any';
         $cost = $this->resolveDynamicPrice($service, $country, $operator);
 
@@ -108,10 +107,10 @@ class OrderController extends Controller
         }
 
         // --- Check service & country are active ---
-        if (!$service->is_active) {
+        if (! $service->is_active) {
             return response()->json(['message' => 'This service is currently unavailable.'], 422);
         }
-        if (!$country->is_active) {
+        if (! $country->is_active) {
             return response()->json(['message' => 'This country is currently unavailable.'], 422);
         }
 
@@ -123,26 +122,27 @@ class OrderController extends Controller
 
         if ($wallet->total_balance < $cost) {
             return response()->json([
-                'message'  => 'Insufficient wallet balance. Please fund your wallet to continue.',
+                'message' => 'Insufficient wallet balance. Please fund your wallet to continue.',
                 'required' => $cost,
-                'balance'  => $wallet->total_balance,
+                'balance' => $wallet->total_balance,
             ], 422);
         }
 
         // --- 1. Provision number via Smart Router (BEFORE wallet deduction) ---
-        $router = new ProviderRouter();
+        $router = new ProviderRouter;
 
         try {
-            $operator = $validated["operator"] ?? "any";
+            $operator = $validated['operator'] ?? 'any';
             $allocation = $router->allocateNumber($country, $service->slug ?? null, $operator);
         } catch (\Exception $e) {
             \Log::error('ProviderRouter allocation failed', [
-                'user_id'    => $user->id,
+                'user_id' => $user->id,
                 'service_id' => $service->id,
                 'country_id' => $country->id,
-                'ip'         => $request->ip(),
-                'error'      => $e->getMessage(),
+                'ip' => $request->ip(),
+                'error' => $e->getMessage(),
             ]);
+
             return response()->json([
                 'message' => $e->getMessage(),
             ], 502);
@@ -151,7 +151,7 @@ class OrderController extends Controller
         // --- 2. Atomic: deduct wallet + create order ---
         try {
             $order = DB::transaction(function () use (
-                $user, $wallet, $cost, $service, $country,
+                $user, $cost, $service, $country,
                 $allocation, $request
             ) {
                 // Re-check balance inside transaction (prevents race condition)
@@ -168,24 +168,24 @@ class OrderController extends Controller
 
                 // Create order with provider tracking
                 $order = NumberOrder::create([
-                    'user_id'              => $user->id,
-                    'service_id'           => $service->id,
-                    'country_id'           => $country->id,
-                    'order_ref'            => 'ORD-' . strtoupper(Str::random(8)),
-                    'phone_number'         => $allocation['phone_number'],
-                    'twilio_sid'           => $allocation['provider_sid'],
-                    'status'               => 'pending',
-                    'cost'                 => $cost,
-                    'expires_at'           => now()->addMinutes((int) env('NUMBER_EXPIRY_MINUTES', 20)),
-                    'ip_address'           => $request->ip(),
-                    'user_agent'           => $request->userAgent(),
+                    'user_id' => $user->id,
+                    'service_id' => $service->id,
+                    'country_id' => $country->id,
+                    'order_ref' => 'ORD-'.strtoupper(Str::random(8)),
+                    'phone_number' => $allocation['phone_number'],
+                    'twilio_sid' => $allocation['provider_sid'],
+                    'status' => 'pending',
+                    'cost' => $cost,
+                    'expires_at' => now()->addMinutes((int) env('NUMBER_EXPIRY_MINUTES', 20)),
+                    'ip_address' => $request->ip(),
+                    'user_agent' => $request->userAgent(),
                     // Provider routing metadata
-                    'provider_id'          => $allocation['provider_id'],
-                    'provider_slug'        => $allocation['provider_slug'],
-                    'provider_order_id'    => $allocation['provider_order_id'] ?? null,
+                    'provider_id' => $allocation['provider_id'],
+                    'provider_slug' => $allocation['provider_slug'],
+                    'provider_order_id' => $allocation['provider_order_id'] ?? null,
                     'provider_response_ms' => $allocation['response_ms'],
-                    'retry_count'          => $allocation['retry_count'],
-                    'routing_log'          => $allocation['routing_log'],
+                    'retry_count' => $allocation['retry_count'],
+                    'routing_log' => $allocation['routing_log'],
                 ]);
 
                 return $order;
@@ -201,7 +201,7 @@ class OrderController extends Controller
                 );
                 \Log::info("Released number {$allocation['phone_number']} after DB failure.");
             } catch (\Exception $releaseEx) {
-                \Log::error("Failed to release number {$allocation['phone_number']}: " . $releaseEx->getMessage());
+                \Log::error("Failed to release number {$allocation['phone_number']}: ".$releaseEx->getMessage());
             }
 
             return response()->json(['message' => $e->getMessage()], 422);
@@ -230,8 +230,8 @@ class OrderController extends Controller
         }
 
         $response = [
-            'message'        => 'Number successfully provisioned. Waiting for OTP…',
-            'order'          => $order,
+            'message' => 'Number successfully provisioned. Waiting for OTP…',
+            'order' => $order,
             'wallet_balance' => $wallet->fresh()->total_balance,
         ];
 
@@ -262,7 +262,7 @@ class OrderController extends Controller
                 $cacheKey = "5sim_poll_{$order->id}";
                 $lastPoll = cache()->get($cacheKey);
 
-                if (!$lastPoll || now()->diffInSeconds($lastPoll) >= 5) {
+                if (! $lastPoll || now()->diffInSeconds($lastPoll) >= 5) {
                     cache()->put($cacheKey, now(), 30); // TTL 30s
                     try {
                         $this->poll5SimForSms($order);
@@ -276,7 +276,7 @@ class OrderController extends Controller
                 $cacheKey = "smspool_poll_{$order->id}";
                 $lastPoll = cache()->get($cacheKey);
 
-                if (!$lastPoll || now()->diffInSeconds($lastPoll) >= 5) {
+                if (! $lastPoll || now()->diffInSeconds($lastPoll) >= 5) {
                     cache()->put($cacheKey, now(), 30); // TTL 30s
                     try {
                         $this->pollSmsPoolForSms($order);
@@ -331,14 +331,12 @@ class OrderController extends Controller
         $order->update(['status' => 'cancelled']);
 
         return response()->json([
-            'message'        => 'Order cancelled and wallet refunded.',
+            'message' => 'Order cancelled and wallet refunded.',
             'wallet_balance' => $request->user()->wallet?->fresh()?->total_balance,
         ]);
     }
 
     // --- Helpers ---
-
-    
 
     /**
      * Poll 5sim API to check if SMS has been received for a pending order.
@@ -347,19 +345,21 @@ class OrderController extends Controller
     private function poll5SimForSms(NumberOrder $order): ?array
     {
         try {
-            $router = new ProviderRouter();
+            $router = new ProviderRouter;
             $fiveSimData = $router->check5SimOrder(
                 $order->provider_order_id,
                 $order->provider_id
             );
 
-            if (!$fiveSimData) return null;
+            if (! $fiveSimData) {
+                return null;
+            }
 
             $fiveSimStatus = $fiveSimData['status'] ?? '';
             $smsArray = $fiveSimData['sms'] ?? [];
 
             // If SMS was received on 5sim
-            if (!empty($smsArray) && ($fiveSimStatus === 'RECEIVED' || $fiveSimStatus === 'FINISHED')) {
+            if (! empty($smsArray) && ($fiveSimStatus === 'RECEIVED' || $fiveSimStatus === 'FINISHED')) {
                 // Get the last SMS (most recent)
                 $lastSms = end($smsArray);
                 $smsText = $lastSms['text'] ?? '';
@@ -370,9 +370,9 @@ class OrderController extends Controller
                 $otpCode = $smsCode ?: $smsText;
 
                 $order->update([
-                    'otp_code'     => $otpCode,
-                    'sms_from'     => $smsSender,
-                    'status'       => 'completed',
+                    'otp_code' => $otpCode,
+                    'sms_from' => $smsSender,
+                    'status' => 'completed',
                     'completed_at' => now(),
                 ]);
 
@@ -425,6 +425,7 @@ class OrderController extends Controller
 
         } catch (\Exception $e) {
             \Log::warning("5SIM poll failed for order #{$order->id}: {$e->getMessage()}");
+
             return null;
         }
     }
@@ -436,12 +437,15 @@ class OrderController extends Controller
     private function fetch5SimProviderInfo(NumberOrder $order): ?array
     {
         try {
-            $router = new ProviderRouter();
+            $router = new ProviderRouter;
             $fiveSimData = $router->check5SimOrder(
                 $order->provider_order_id,
                 $order->provider_id
             );
-            if (!$fiveSimData) return null;
+            if (! $fiveSimData) {
+                return null;
+            }
+
             return $this->build5SimProviderInfo($fiveSimData);
         } catch (\Exception $e) {
             return null;
@@ -459,34 +463,34 @@ class OrderController extends Controller
 
         // Map 5sim statuses to user-friendly labels
         $statusMap = [
-            'PENDING'  => ['label' => 'Preparing Number',   'color' => 'amber'],
+            'PENDING' => ['label' => 'Preparing Number',   'color' => 'amber'],
             'RECEIVED' => ['label' => 'Active — Waiting for SMS', 'color' => 'emerald'],
             'FINISHED' => ['label' => 'Completed',          'color' => 'blue'],
             'CANCELED' => ['label' => 'Cancelled',          'color' => 'red'],
-            'BANNED'   => ['label' => 'Number Banned',      'color' => 'red'],
-            'TIMEOUT'  => ['label' => 'Expired',            'color' => 'red'],
+            'BANNED' => ['label' => 'Number Banned',      'color' => 'red'],
+            'TIMEOUT' => ['label' => 'Expired',            'color' => 'red'],
         ];
 
         $mapped = $statusMap[$status] ?? ['label' => $status, 'color' => 'gray'];
 
         return [
-            'provider'        => '5SIM',
-            'status'          => $status,
-            'status_label'    => $mapped['label'],
-            'status_color'    => $mapped['color'],
-            'phone'           => $data['phone'] ?? null,
-            'operator'        => $data['operator'] ?? null,
-            'product'         => $data['product'] ?? null,
-            'provider_price'  => $data['price'] ?? null,
-            'expires_at'      => $data['expires'] ?? null,
-            'created_at'      => $data['created_at'] ?? null,
-            'country'         => $data['country'] ?? null,
-            'sms_count'       => count($smsArray),
-            'sms'             => array_map(function ($sms) {
+            'provider' => '5SIM',
+            'status' => $status,
+            'status_label' => $mapped['label'],
+            'status_color' => $mapped['color'],
+            'phone' => $data['phone'] ?? null,
+            'operator' => $data['operator'] ?? null,
+            'product' => $data['product'] ?? null,
+            'provider_price' => $data['price'] ?? null,
+            'expires_at' => $data['expires'] ?? null,
+            'created_at' => $data['created_at'] ?? null,
+            'country' => $data['country'] ?? null,
+            'sms_count' => count($smsArray),
+            'sms' => array_map(function ($sms) {
                 return [
-                    'sender'     => $sms['sender'] ?? null,
-                    'text'       => $sms['text'] ?? null,
-                    'code'       => $sms['code'] ?? null,
+                    'sender' => $sms['sender'] ?? null,
+                    'text' => $sms['text'] ?? null,
+                    'code' => $sms['code'] ?? null,
                     'received_at' => $sms['date'] ?? $sms['created_at'] ?? null,
                 ];
             }, $smsArray),
@@ -503,13 +507,15 @@ class OrderController extends Controller
     private function pollSmsPoolForSms(NumberOrder $order): ?array
     {
         try {
-            $router = new ProviderRouter();
+            $router = new ProviderRouter;
             $smsPoolData = $router->checkSmsPoolOrder(
                 $order->provider_order_id,
                 $order->provider_id
             );
 
-            if (!$smsPoolData) return null;
+            if (! $smsPoolData) {
+                return null;
+            }
 
             $statusCode = (int) ($smsPoolData['status'] ?? 0);
             $statusName = SmsPoolService::mapStatusCode($statusCode);
@@ -522,9 +528,9 @@ class OrderController extends Controller
                 $otpCode = $smsCode ?: $smsText;
 
                 $order->update([
-                    'otp_code'     => $otpCode,
-                    'sms_from'     => 'SMSPool',
-                    'status'       => 'completed',
+                    'otp_code' => $otpCode,
+                    'sms_from' => 'SMSPool',
+                    'status' => 'completed',
                     'completed_at' => now(),
                 ]);
 
@@ -566,6 +572,7 @@ class OrderController extends Controller
 
         } catch (\Exception $e) {
             \Log::warning("SMSPool poll failed for order #{$order->id}: {$e->getMessage()}");
+
             return null;
         }
     }
@@ -580,12 +587,12 @@ class OrderController extends Controller
 
         // Map SMSPool statuses to user-friendly labels
         $statusMap = [
-            'PENDING'    => ['label' => 'Active — Waiting for SMS', 'color' => 'emerald'],
-            'EXPIRED'    => ['label' => 'Expired',                  'color' => 'red'],
-            'COMPLETED'  => ['label' => 'Completed',                'color' => 'blue'],
-            'RESEND'     => ['label' => 'Resending SMS',            'color' => 'amber'],
-            'CANCELLED'  => ['label' => 'Cancelled',                'color' => 'red'],
-            'REFUNDED'   => ['label' => 'Refunded',                 'color' => 'red'],
+            'PENDING' => ['label' => 'Active — Waiting for SMS', 'color' => 'emerald'],
+            'EXPIRED' => ['label' => 'Expired',                  'color' => 'red'],
+            'COMPLETED' => ['label' => 'Completed',                'color' => 'blue'],
+            'RESEND' => ['label' => 'Resending SMS',            'color' => 'amber'],
+            'CANCELLED' => ['label' => 'Cancelled',                'color' => 'red'],
+            'REFUNDED' => ['label' => 'Refunded',                 'color' => 'red'],
             'PROCESSING' => ['label' => 'Processing',               'color' => 'amber'],
             'ACTIVATING' => ['label' => 'Activating Number',        'color' => 'amber'],
         ];
@@ -593,23 +600,23 @@ class OrderController extends Controller
         $mapped = $statusMap[$statusName] ?? ['label' => $statusName, 'color' => 'gray'];
 
         return [
-            'provider'        => 'SMSPool',
-            'status'          => $statusName,
-            'status_label'    => $mapped['label'],
-            'status_color'    => $mapped['color'],
-            'phone'           => $data['phonenumber'] ?? null,
-            'operator'        => null,
-            'product'         => null,
-            'provider_price'  => null,
-            'expires_at'      => isset($data['expiration']) ? $data['expiration'] : null,
-            'created_at'      => null,
-            'country'         => $data['country'] ?? null,
-            'sms_count'       => !empty($data['sms'] ?? $data['code'] ?? '') ? 1 : 0,
-            'sms'             => !empty($data['code'] ?? $data['sms'] ?? '')
+            'provider' => 'SMSPool',
+            'status' => $statusName,
+            'status_label' => $mapped['label'],
+            'status_color' => $mapped['color'],
+            'phone' => $data['phonenumber'] ?? null,
+            'operator' => null,
+            'product' => null,
+            'provider_price' => null,
+            'expires_at' => isset($data['expiration']) ? $data['expiration'] : null,
+            'created_at' => null,
+            'country' => $data['country'] ?? null,
+            'sms_count' => ! empty($data['sms'] ?? $data['code'] ?? '') ? 1 : 0,
+            'sms' => ! empty($data['code'] ?? $data['sms'] ?? '')
                 ? [[
-                    'sender'      => 'SMSPool',
-                    'text'        => $data['full_sms'] ?? $data['sms'] ?? null,
-                    'code'        => $data['code'] ?? null,
+                    'sender' => 'SMSPool',
+                    'text' => $data['full_sms'] ?? $data['sms'] ?? null,
+                    'code' => $data['code'] ?? null,
                     'received_at' => now()->toIso8601String(),
                 ]]
                 : [],
@@ -622,10 +629,12 @@ class OrderController extends Controller
     private function releaseNumber(NumberOrder $order): void
     {
         // Skip if no provider info to release
-        if (!$order->provider_order_id && !$order->twilio_sid) return;
+        if (! $order->provider_order_id && ! $order->twilio_sid) {
+            return;
+        }
 
         try {
-            $router = new ProviderRouter();
+            $router = new ProviderRouter;
             $router->releaseNumber(
                 $order->provider_order_id ?? $order->twilio_sid,
                 $order->provider_id,
@@ -634,7 +643,7 @@ class OrderController extends Controller
             );
             \Log::info("Released number {$order->phone_number} (order #{$order->id}) via provider {$order->provider_slug}");
         } catch (\Exception $e) {
-            \Log::warning("Release error for order #{$order->id}: " . $e->getMessage());
+            \Log::warning("Release error for order #{$order->id}: ".$e->getMessage());
         }
     }
 
@@ -657,6 +666,7 @@ class OrderController extends Controller
 
         if ($alreadyRefunded) {
             \Log::info("Refund skipped for order #{$order->id} — already refunded.");
+
             return;
         }
 
@@ -673,7 +683,9 @@ class OrderController extends Controller
      */
     private function releaseInternalNumber(NumberOrder $order): void
     {
-        if ($order->provider_slug !== 'internal') return;
+        if ($order->provider_slug !== 'internal') {
+            return;
+        }
 
         $phoneNumber = \App\Models\PhoneNumber::where('phone_number', $order->phone_number)
             ->where('status', 'in_use')
@@ -684,9 +696,6 @@ class OrderController extends Controller
             \Log::info("Internal pool number {$order->phone_number} released back to pool (order #{$order->id}).");
         }
     }
-
-
-
 
     /**
      * Ban a number — reports it as banned by the platform (e.g. WhatsApp banned it).
@@ -706,7 +715,7 @@ class OrderController extends Controller
             ]);
         }
 
-        if (!in_array($order->status, ['pending', 'completed'])) {
+        if (! in_array($order->status, ['pending', 'completed'])) {
             return response()->json(['message' => 'Only pending or completed orders can be banned.'], 422);
         }
 
@@ -720,7 +729,7 @@ class OrderController extends Controller
                     \Log::info("5SIM: Banned order #{$order->id} (5sim ID: {$order->provider_order_id})");
                 }
             } catch (\Exception $e) {
-                \Log::warning("5SIM ban failed for order #{$order->id}: " . $e->getMessage());
+                \Log::warning("5SIM ban failed for order #{$order->id}: ".$e->getMessage());
             }
         }
 
@@ -734,7 +743,7 @@ class OrderController extends Controller
                     \Log::info("SMSPool: Cancelled order #{$order->id} (SMSPool ID: {$order->provider_order_id})");
                 }
             } catch (\Exception $e) {
-                \Log::warning("SMSPool cancel failed for order #{$order->id}: " . $e->getMessage());
+                \Log::warning("SMSPool cancel failed for order #{$order->id}: ".$e->getMessage());
             }
         }
 
@@ -746,7 +755,7 @@ class OrderController extends Controller
         $order->update(['status' => 'cancelled']);
 
         return response()->json([
-            'message'        => 'Number reported as banned. Order cancelled and wallet refunded.',
+            'message' => 'Number reported as banned. Order cancelled and wallet refunded.',
             'wallet_balance' => $request->user()->wallet?->fresh()?->total_balance,
         ]);
     }
@@ -766,7 +775,7 @@ class OrderController extends Controller
         $country = Country::findOrFail($request->country_id);
 
         $provider = ApiProvider::where('slug', '5sim')->where('is_active', true)->first();
-        if (!$provider) {
+        if (! $provider) {
             return response()->json(['operators' => []], 200);
         }
 
@@ -782,23 +791,29 @@ class OrderController extends Controller
             $productOperators = $prices[$fiveSimCountry][$product] ?? [];
             foreach ($productOperators as $operatorName => $operatorData) {
                 $operators[] = [
-                    'name'    => $operatorName,
-                    'cost'    => round((float) ($operatorData['cost'] ?? 0), 4),
-                    'count'   => (int) ($operatorData['count'] ?? 0),
-                    'rate'    => round((float) ($operatorData['rate'] ?? 0), 2),
+                    'name' => $operatorName,
+                    'cost' => round((float) ($operatorData['cost'] ?? 0), 4),
+                    'count' => (int) ($operatorData['count'] ?? 0),
+                    'rate' => round((float) ($operatorData['rate'] ?? 0), 2),
                 ];
             }
 
             // Sort: "any" first, then by cost ascending
             usort($operators, function ($a, $b) {
-                if ($a['name'] === 'any') return -1;
-                if ($b['name'] === 'any') return 1;
+                if ($a['name'] === 'any') {
+                    return -1;
+                }
+                if ($b['name'] === 'any') {
+                    return 1;
+                }
+
                 return $a['cost'] <=> $b['cost'];
             });
 
             return response()->json(['operators' => $operators]);
         } catch (\Exception $e) {
-            \Log::warning("Failed to fetch 5sim operators: " . $e->getMessage());
+            \Log::warning('Failed to fetch 5sim operators: '.$e->getMessage());
+
             return response()->json(['operators' => [['name' => 'any', 'cost' => 0, 'count' => 0, 'rate' => 0]]]);
         }
     }
@@ -812,14 +827,14 @@ class OrderController extends Controller
 
         try {
             $provider = ApiProvider::where('slug', '5sim')->where('is_active', true)->first();
-            if (!$provider) {
+            if (! $provider) {
                 return $this->resolveCountryPriceFallback($country);
             }
 
-            $fiveSim        = FiveSimService::fromProvider($provider);
+            $fiveSim = FiveSimService::fromProvider($provider);
             $fiveSimCountry = FiveSimService::mapCountryCode($country->code);
-            $product        = FiveSimService::mapServiceToProduct($service->slug ?? $service->name);
-            $prices         = $fiveSim->getPrices($fiveSimCountry);
+            $product = FiveSimService::mapServiceToProduct($service->slug ?? $service->name);
+            $prices = $fiveSim->getPrices($fiveSimCountry);
 
             $productOperators = $prices[$fiveSimCountry][$product] ?? [];
 
@@ -834,11 +849,21 @@ class OrderController extends Controller
             }
 
             // Fallback: use 'any' operator or pick the most expensive with count > 0
-            if (!$costUsd || $costUsd <= 0) {
-                if (isset($productOperators['any']) && ($productOperators['any']['count'] ?? 0) > 0) {
-                    $costUsd = (float) ($productOperators['any']['cost'] ?? 0);
+            if (! $costUsd || $costUsd <= 0) {
+                if ($operator === 'any') {
+                    $selectedOp = FiveSimService::selectBestOperator($productOperators);
+                    if ($selectedOp !== 'any' && isset($productOperators[$selectedOp])) {
+                        $costUsd = (float) ($productOperators[$selectedOp]['cost'] ?? 0);
+                    }
                 }
-                if (!$costUsd || $costUsd <= 0) {
+
+                if (! $costUsd || $costUsd <= 0) {
+                    if (isset($productOperators['any']) && ($productOperators['any']['count'] ?? 0) > 0) {
+                        $costUsd = (float) ($productOperators['any']['cost'] ?? 0);
+                    }
+                }
+
+                if (! $costUsd || $costUsd <= 0) {
                     foreach ($productOperators as $opData) {
                         $opCost = (float) ($opData['cost'] ?? 0);
                         if ($opCost > 0 && ($opData['count'] ?? 0) > 0) {
@@ -850,7 +875,7 @@ class OrderController extends Controller
                 }
             }
 
-            if (!$costUsd || $costUsd <= 0) {
+            if (! $costUsd || $costUsd <= 0) {
                 return $this->resolveCountryPriceFallback($country);
             }
 
@@ -860,13 +885,14 @@ class OrderController extends Controller
                 $markup = (float) ApiSetting::getValue('pricing_markup_percent', 0);
             }
 
-            $baseNgn  = round($costUsd * $rate, 2);
+            $baseNgn = round($costUsd * $rate, 2);
             $totalNgn = round($baseNgn * (1 + ($markup / 100)), 2);
 
             return $totalNgn;
 
         } catch (\Exception $e) {
-            \Log::warning("Dynamic pricing failed: " . $e->getMessage());
+            \Log::warning('Dynamic pricing failed: '.$e->getMessage());
+
             return $this->resolveCountryPriceFallback($country);
         }
     }
@@ -876,17 +902,20 @@ class OrderController extends Controller
      */
     private function resolveCountryPriceFallback(Country $country): float
     {
-        $rate   = (float) ApiSetting::getValue('usd_to_ngn_rate', 1500);
+        $rate = (float) ApiSetting::getValue('usd_to_ngn_rate', 1500);
         $markup = (float) ApiSetting::getValue('pricing_markup_percent', 0);
 
         if ($country->price && (float) $country->price > 0) {
             $base = (float) $country->price;
+
             return round($base * (1 + ($markup / 100)), 2);
         }
         if ($country->price_usd && (float) $country->price_usd > 0) {
             $base = round((float) $country->price_usd * $rate, 2);
+
             return round($base * (1 + ($markup / 100)), 2);
         }
+
         return 0.0;
     }
 }

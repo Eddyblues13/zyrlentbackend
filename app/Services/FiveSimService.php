@@ -80,8 +80,8 @@ class FiveSimService
         'ZW' => 'zimbabwe', 'KR' => 'southkorea', 'SG' => 'singapore',
     ];
 
-
     private string $apiKey;
+
     private string $baseUrl = 'https://5sim.net/v1';
 
     public function __construct(string $apiKey)
@@ -95,9 +95,10 @@ class FiveSimService
     public static function fromProvider(ApiProvider $provider): self
     {
         $apiKey = $provider->getCredential('api_key');
-        if (!$apiKey) {
+        if (! $apiKey) {
             throw new \Exception('5SIM API key not configured');
         }
+
         return new self($apiKey);
     }
 
@@ -106,7 +107,7 @@ class FiveSimService
      */
     private function get(string $url, array $query = [])
     {
-        $fullUrl = $this->baseUrl . $url;
+        $fullUrl = $this->baseUrl.$url;
 
         Log::debug("5SIM API request: GET {$fullUrl}", ['query' => $query]);
 
@@ -119,7 +120,7 @@ class FiveSimService
 
         Log::debug("5SIM API response [{$response->status()}]: {$body}", ['url' => $url]);
 
-        if (!$response->successful()) {
+        if (! $response->successful()) {
             Log::error("5SIM API error [{$response->status()}]: {$body}", ['url' => $url]);
             throw new \Exception("5SIM API error: {$body}");
         }
@@ -127,7 +128,7 @@ class FiveSimService
         $json = $response->json();
 
         // response->json() returns null when body is not valid JSON
-        if ($json === null && !empty($body)) {
+        if ($json === null && ! empty($body)) {
             Log::warning("5SIM API returned non-JSON body: {$body}", ['url' => $url]);
             throw new \Exception("5SIM API returned unexpected response: {$body}");
         }
@@ -142,9 +143,9 @@ class FiveSimService
     {
         $response = Http::withHeaders([
             'Accept' => 'application/json',
-        ])->timeout(30)->get($this->baseUrl . $url, $query);
+        ])->timeout(30)->get($this->baseUrl.$url, $query);
 
-        if (!$response->successful()) {
+        if (! $response->successful()) {
             $body = $response->body();
             Log::error("5SIM guest API error [{$response->status()}]: {$body}", ['url' => $url]);
             throw new \Exception("5SIM API error: {$body}");
@@ -171,6 +172,7 @@ class FiveSimService
     public function getBalance(): float
     {
         $profile = $this->getProfile();
+
         return (float) ($profile['balance'] ?? 0);
     }
 
@@ -194,8 +196,13 @@ class FiveSimService
     public function getPrices(?string $country = null, ?string $product = null): array
     {
         $query = [];
-        if ($country) $query['country'] = $country;
-        if ($product) $query['product'] = $product;
+        if ($country) {
+            $query['country'] = $country;
+        }
+        if ($product) {
+            $query['product'] = $product;
+        }
+
         return $this->guestGet('/guest/prices', $query);
     }
 
@@ -287,6 +294,42 @@ class FiveSimService
     }
 
     /**
+     * Select the operator with the highest price (and highest success rate if prices are equal).
+     */
+    public static function selectBestOperator(array $productOperators): string
+    {
+        $bestOperator = 'any';
+        $bestCost = -1.0;
+        $bestRate = -1.0;
+
+        foreach ($productOperators as $opName => $opData) {
+            if ($opName === 'any') {
+                continue;
+            }
+
+            $count = (int) ($opData['count'] ?? 0);
+            $cost = (float) ($opData['cost'] ?? 0);
+            $rate = (float) ($opData['rate'] ?? 0);
+
+            if ($count <= 0) {
+                continue;
+            }
+
+            if ($cost > $bestCost) {
+                $bestOperator = $opName;
+                $bestCost = $cost;
+                $bestRate = $rate;
+            } elseif (abs($cost - $bestCost) < 0.00001 && $rate > $bestRate) {
+                $bestOperator = $opName;
+                $bestCost = $cost;
+                $bestRate = $rate;
+            }
+        }
+
+        return $bestOperator;
+    }
+
+    /**
      * Map service name/slug to 5sim product name.
      */
     public static function mapServiceToProduct(string $serviceName): string
@@ -294,58 +337,58 @@ class FiveSimService
         $name = strtolower(trim($serviceName));
 
         $map = [
-            'whatsapp'  => 'whatsapp',
-            'telegram'  => 'telegram',
+            'whatsapp' => 'whatsapp',
+            'telegram' => 'telegram',
             'instagram' => 'instagram',
-            'facebook'  => 'facebook',
-            'tiktok'    => 'tiktok',
-            'twitter'   => 'twitter',
-            'x'         => 'twitter',
-            'google'    => 'google',
-            'youtube'   => 'google',
-            'gmail'     => 'google',
-            'snapchat'  => 'snapchat',
-            'discord'   => 'discord',
-            'linkedin'  => 'linkedin',
-            'amazon'    => 'amazon',
+            'facebook' => 'facebook',
+            'tiktok' => 'tiktok',
+            'twitter' => 'twitter',
+            'x' => 'twitter',
+            'google' => 'google',
+            'youtube' => 'google',
+            'gmail' => 'google',
+            'snapchat' => 'snapchat',
+            'discord' => 'discord',
+            'linkedin' => 'linkedin',
+            'amazon' => 'amazon',
             'microsoft' => 'microsoft',
-            'apple'     => 'apple',
-            'uber'      => 'uber',
-            'netflix'   => 'netflix',
-            'spotify'   => 'spotify',
-            'paypal'    => 'paypal',
-            'ebay'      => 'ebay',
-            'yahoo'     => 'yahoo',
-            'line'      => 'line',
-            'viber'     => 'viber',
-            'wechat'    => 'wechat',
-            'signal'    => 'signal',
-            'tinder'    => 'tinder',
-            'bumble'    => 'bumble',
-            'steam'     => 'steam',
-            'openai'    => 'openai',
-            'chatgpt'   => 'openai',
-            'claude'    => 'claudeai',
-            'coinbase'  => 'coinbase',
-            'binance'   => 'binance',
-            'wise'      => 'wise',
-            'bolt'      => 'bolt',
-            'grab'      => 'grabtaxi',
-            'shopee'    => 'shopee',
-            'lazada'    => 'lazada',
-            'airbnb'    => 'airbnb',
-            'nike'      => 'nike',
-            'zara'      => 'zara',
-            'temu'      => 'temu',
-            'reddit'    => 'reddit',
+            'apple' => 'apple',
+            'uber' => 'uber',
+            'netflix' => 'netflix',
+            'spotify' => 'spotify',
+            'paypal' => 'paypal',
+            'ebay' => 'ebay',
+            'yahoo' => 'yahoo',
+            'line' => 'line',
+            'viber' => 'viber',
+            'wechat' => 'wechat',
+            'signal' => 'signal',
+            'tinder' => 'tinder',
+            'bumble' => 'bumble',
+            'steam' => 'steam',
+            'openai' => 'openai',
+            'chatgpt' => 'openai',
+            'claude' => 'claudeai',
+            'coinbase' => 'coinbase',
+            'binance' => 'binance',
+            'wise' => 'wise',
+            'bolt' => 'bolt',
+            'grab' => 'grabtaxi',
+            'shopee' => 'shopee',
+            'lazada' => 'lazada',
+            'airbnb' => 'airbnb',
+            'nike' => 'nike',
+            'zara' => 'zara',
+            'temu' => 'temu',
+            'reddit' => 'reddit',
             'pinterest' => 'pinterest',
-            'badoo'     => 'badoo',
-            'skype'     => 'skype',
-            'kakao'     => 'kakaotalk',
+            'badoo' => 'badoo',
+            'skype' => 'skype',
+            'kakao' => 'kakaotalk',
             'kakaotalk' => 'kakaotalk',
-            'naver'     => 'naver',
-            'imo'       => 'imo',
-            'other'     => 'other',
+            'naver' => 'naver',
+            'imo' => 'imo',
+            'other' => 'other',
         ];
 
         // Direct match
