@@ -303,4 +303,18 @@ class UserManagerController extends Controller
             'user'    => $user->only(['id', 'name', 'email']),
         ]);
     }
+
+    /**
+     * Delete a user permanently.
+     */
+    public function destroy(User $user)
+    {
+        $user->tokens()->delete();
+        $user->delete();
+
+        return response()->json([
+            'message' => "User {$user->name} has been deleted permanently."
+        ]);
+    }
 }
+

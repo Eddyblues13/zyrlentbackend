@@ -137,6 +137,8 @@ Route::prefix('admin')->middleware('auth:sanctum')->group(function () {
     Route::get('/users/{user}/ip-logs', [UserManagerController::class, 'ipLogs']);
     Route::get('/users/{user}/activation-history', [UserManagerController::class, 'activationHistory']);
     Route::post('/users/{user}/toggle-reseller', [UserManagerController::class, 'toggleReseller']);
+    Route::delete('/users/{user}', [UserManagerController::class, 'destroy']);
+
 
     // Order Management
     Route::get('/orders', [OrderManagerController::class, 'index']);
