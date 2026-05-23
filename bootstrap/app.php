@@ -17,6 +17,9 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->validateCsrfTokens(except: [
             'api/webhook/sms'
         ]);
+        $middleware->alias([
+            'developer.auth' => \App\Http\Middleware\DeveloperApiAuth::class,
+        ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         //

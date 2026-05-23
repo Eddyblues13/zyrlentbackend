@@ -82,6 +82,11 @@ Route::middleware('auth:sanctum')->group(function () {
     // Notifications (user-facing)
     Route::get('/notifications', [NotificationUserController::class, 'index']);
     Route::get("/notifications/count", [NotificationUserController::class, "count"]);
+
+    // API Key Management (for user dashboard)
+    Route::get('/user/api-key', [\App\Http\Controllers\DeveloperApiController::class, 'getApiKey']);
+    Route::post('/user/api-key/generate', [\App\Http\Controllers\DeveloperApiController::class, 'generateApiKey']);
+    Route::delete('/user/api-key/revoke', [\App\Http\Controllers\DeveloperApiController::class, 'revokeApiKey']);
 });
 
 // ═══════════════════════════════════════════════════════════════
@@ -220,4 +225,14 @@ Route::prefix('admin')->middleware('auth:sanctum')->group(function () {
     Route::post("/numbers/bulk-status", [NumberInventoryController::class, "bulkUpdateStatus"]);
     Route::post("/numbers/bulk-assign-services", [NumberInventoryController::class, "bulkAssignServices"]);
     Route::post("/numbers/bulk-set-price", [NumberInventoryController::class, "bulkSetPrice"]);
+});
+
+// ─── Developer API Routes (5SIM Protocol Compatible) ────────
+Route::middleware('developer.auth')->prefix('v1')->group(function () {
+    Route::get('/user/profile', [\App\Http\Controllers\DeveloperApiController::class, 'profile']);
+    Route::get('/user/buy/activation/{country}/{operator}/{product}', [\App\Http\Controllers\DeveloperApiController::class, 'buy']);
+    Route::get('/user/check/{id}', [\App\Http\Controllers\DeveloperApiController::class, 'check']);
+    Route::get('/user/finish/{id}', [\App\Http\Controllers\DeveloperApiController::class, 'finish']);
+    Route::get('/user/cancel/{id}', [\App\Http\Controllers\DeveloperApiController::class, 'cancel']);
+    Route::get('/user/ban/{id}', [\App\Http\Controllers\DeveloperApiController::class, 'ban']);
 });
