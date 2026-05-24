@@ -787,12 +787,21 @@ class OrderController extends Controller
             // Get prices for this country — returns {country: {product: {operator: {cost,count,rate}}}}
             $prices = $fiveSim->getPrices($fiveSimCountry);
 
+            // Fetch the markup percent (provider specific or fallback to global)
+            $markup = (float) ($provider->markup_percent ?? 0);
+            if ($markup <= 0) {
+                $markup = (float) ApiSetting::getValue('pricing_markup_percent', 0);
+            }
+
             $operators = [];
             $productOperators = $prices[$fiveSimCountry][$product] ?? [];
             foreach ($productOperators as $operatorName => $operatorData) {
+                $rawCost = (float) ($operatorData['cost'] ?? 0);
+                $markedUpCost = round($rawCost * (1 + ($markup / 100)), 4);
+
                 $operators[] = [
                     'name' => $operatorName,
-                    'cost' => round((float) ($operatorData['cost'] ?? 0), 4),
+                    'cost' => $markedUpCost,
                     'count' => (int) ($operatorData['count'] ?? 0),
                     'rate' => round((float) ($operatorData['rate'] ?? 0), 2),
                 ];

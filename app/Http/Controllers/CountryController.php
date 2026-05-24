@@ -10,13 +10,23 @@ class CountryController extends Controller
     {
         $popularCodes = ['US', 'GB', 'CA'];
 
+        $rate = (float) \App\Models\ApiSetting::getValue('usd_to_ngn_rate', 1500);
+        $provider = \App\Models\ApiProvider::where('slug', '5sim')->where('is_active', true)->first();
+        $markup = 0.0;
+        if ($provider) {
+            $markup = (float) ($provider->markup_percent ?? 0);
+        }
+        if ($markup <= 0) {
+            $markup = (float) \App\Models\ApiSetting::getValue('pricing_markup_percent', 0);
+        }
+
         $countries = Country::where('is_active', true)
             ->withCount('orders')
             ->orderByDesc('orders_count')
             ->orderByDesc('success_rate')
             ->orderBy('name')
             ->get()
-            ->map(function ($country) use ($popularCodes) {
+            ->map(function ($country) use ($popularCodes, $rate, $markup) {
                 $available = (int) ($country->available_numbers ?? 200);
 
                 // Use the direct NGN price field; fall back to USD conversion only as legacy
@@ -24,8 +34,10 @@ class CountryController extends Controller
                 if ($country->price && (float) $country->price > 0) {
                     $price = (float) $country->price;
                 } elseif ($country->price_usd && (float) $country->price_usd > 0) {
-                    $price = round((float) $country->price_usd * 1600, 0);
+                    $price = (float) $country->price_usd * $rate;
                 }
+
+                $price = round($price * (1 + ($markup / 100)), 2);
 
                 return [
                     'id'                => $country->id,
