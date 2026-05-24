@@ -5,62 +5,49 @@ use App\Http\Controllers\OrderController;
 use App\Models\ApiProvider;
 use App\Models\ApiSetting;
 use App\Models\Country;
+use App\Models\Service;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 
 uses(RefreshDatabase::class);
 
-test('usdToNgn handles global and provider-specific markups correctly', function () {
-    // 1. Setup global settings: NGN Rate = 1500, Global Markup = 20%
+test('usdToBaseNgn in ProviderFetchController converts usd to ngn without markup', function () {
+    // Setup global settings: NGN Rate = 1500, Global Markup = 50%
     ApiSetting::setValue('usd_to_ngn_rate', 1500);
-    ApiSetting::setValue('pricing_markup_percent', 20);
+    ApiSetting::setValue('pricing_markup_percent', 50);
 
     $controller = new ProviderFetchController();
-    $reflectionUsdToNgn = new \ReflectionMethod(ProviderFetchController::class, 'usdToNgn');
-    $reflectionUsdToNgn->setAccessible(true);
+    $reflection = new \ReflectionMethod(ProviderFetchController::class, 'usdToBaseNgn');
+    $reflection->setAccessible(true);
 
-    // 2. Test global markup fallback: $1.00 USD should be ₦1800 (1500 * 1.20)
-    $priceNgnGlobal = $reflectionUsdToNgn->invoke($controller, 1.00);
-    expect($priceNgnGlobal)->toEqual(1800.00);
+    // $1.00 USD should be exactly ₦1500 (without any markup)
+    $priceNgn = $reflection->invoke($controller, 1.00);
+    expect($priceNgn)->toEqual(1500.00);
 
-    // 3. Setup provider with 50% markup
-    $provider = ApiProvider::create([
-        'name' => 'Test Twilio',
-        'slug' => 'twilio-test',
-        'type' => 'twilio',
-        'credentials' => ['account_sid' => 'xx', 'auth_token' => 'yy'],
-        'markup_percent' => 50,
-        'priority' => 1,
-    ]);
-
-    // 4. Test provider-specific markup: $1.00 USD should be ₦2250 (1500 * 1.50)
-    $priceNgnProvider = $reflectionUsdToNgn->invoke($controller, 1.00, $provider);
-    expect($priceNgnProvider)->toEqual(2250.00);
-
-    // 5. Test provider with 0% markup falls back to global markup (20%)
-    $providerZero = ApiProvider::create([
-        'name' => 'Test 5Sim',
-        'slug' => 'fivesim-test',
-        'type' => '5sim',
-        'credentials' => ['api_key' => 'zz'],
-        'markup_percent' => 0,
-        'priority' => 2,
-    ]);
-
-    $priceNgnProviderZero = $reflectionUsdToNgn->invoke($controller, 1.00, $providerZero);
-    expect($priceNgnProviderZero)->toEqual(1800.00);
+    // $2.50 USD should be exactly ₦3750
+    $priceNgn2 = $reflection->invoke($controller, 2.50);
+    expect($priceNgn2)->toEqual(3750.00);
 });
 
-test('resolveCountryPriceFallback returns final country price directly without double markup', function () {
-    // 1. Setup global settings: NGN Rate = 1500, Global Markup = 20%
+test('resolveCountryPriceFallback combines country cost and service cost before applying markup', function () {
+    // 1. Setup global settings: NGN Rate = 1500, Global Markup = 50%
     ApiSetting::setValue('usd_to_ngn_rate', 1500);
-    ApiSetting::setValue('pricing_markup_percent', 20);
+    ApiSetting::setValue('pricing_markup_percent', 50);
 
-    // 2. Create country with price = 1800 NGN (which already has the 20% markup included)
+    // 2. Create country and service
+    // Country cost = 1500 NGN (base price)
     $country = Country::create([
         'name' => 'United States',
         'code' => 'US',
         'price_usd' => 1.00,
-        'price' => 1800.00,
+        'price' => 1500.00,
+        'is_active' => true,
+    ]);
+
+    // Service cost = 2000 NGN (base price)
+    $service = Service::create([
+        'name' => 'WhatsApp',
+        'slug' => 'whatsapp',
+        'cost' => 2000.00,
         'is_active' => true,
     ]);
 
@@ -68,11 +55,20 @@ test('resolveCountryPriceFallback returns final country price directly without d
     $reflectionFallback = new \ReflectionMethod(OrderController::class, 'resolveCountryPriceFallback');
     $reflectionFallback->setAccessible(true);
 
-    // 3. Test fallback: Should return exactly ₦1800, NOT applying markup again to yield ₦2160
-    $finalPrice = $reflectionFallback->invoke($orderController, $country);
-    expect($finalPrice)->toEqual(1800.00);
+    // 3. Test fallback with 50% markup:
+    // Base Price = 1500 + 2000 = 3500 NGN
+    // Final Price = 3500 * (1 + 0.50) = 5250 NGN
+    $finalPrice = $reflectionFallback->invoke($orderController, $service, $country);
+    expect($finalPrice)->toEqual(5250.00);
 
-    // 4. If price is 0/null, but price_usd is set to 1.00, it should apply exchange rate and markup once to yield ₦1800
+    // 4. Test fallback with 20% markup:
+    ApiSetting::setValue('pricing_markup_percent', 20);
+    // Base Price = 1500 + 2000 = 3500 NGN
+    // Final Price = 3500 * (1 + 0.20) = 4200 NGN
+    $finalPrice2 = $reflectionFallback->invoke($orderController, $service, $country);
+    expect($finalPrice2)->toEqual(4200.00);
+
+    // 5. Test fallback when country has no static price but has price_usd
     $countryNoPrice = Country::create([
         'name' => 'Canada',
         'code' => 'CA',
@@ -80,7 +76,10 @@ test('resolveCountryPriceFallback returns final country price directly without d
         'price' => 0.00,
         'is_active' => true,
     ]);
-
-    $finalPriceNoPrice = $reflectionFallback->invoke($orderController, $countryNoPrice);
-    expect($finalPriceNoPrice)->toEqual(1800.00);
+    // Base Country = 1.00 USD * 1500 = 1500 NGN
+    // Base Service = 2000 NGN
+    // Base Price = 1500 + 2000 = 3500 NGN
+    // Final Price with 20% markup = 3500 * 1.20 = 4200 NGN
+    $finalPrice3 = $reflectionFallback->invoke($orderController, $service, $countryNoPrice);
+    expect($finalPrice3)->toEqual(4200.00);
 });

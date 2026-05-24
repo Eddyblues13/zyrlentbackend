@@ -44,6 +44,12 @@ class ProviderFetchController extends Controller
         return round($base * (1 + ($markup / 100)), 2);
     }
 
+    private function usdToBaseNgn(float $usd): float
+    {
+        $rate = $this->getExchangeRate();
+        return round($usd * $rate, 2);
+    }
+
     /**
      * Get all active providers from database.
      */
@@ -221,7 +227,7 @@ class ProviderFetchController extends Controller
                 'dial_code' => $data['dial_code'] ?? '',
                 'twilio_code' => strtoupper($data['twilio_code'] ?? $data['code']),
                 'price_usd' => $data['price_usd'],
-                'price' => $this->usdToNgn((float) $data['price_usd']),
+                'price' => $this->usdToBaseNgn((float) $data['price_usd']),
                 'is_active' => true,
             ]);
             $imported++;
@@ -321,7 +327,7 @@ class ProviderFetchController extends Controller
             foreach ($countries as $country) {
                 $code = strtoupper($country->countryCode);
                 $priceUsd = $this->estimateTwilioPrice($code);
-                $priceNgn = $this->usdToNgn($priceUsd, $provider);
+                $priceNgn = $this->usdToBaseNgn($priceUsd);
 
                 $results[] = [
                     'name' => $country->country,
@@ -447,8 +453,8 @@ class ProviderFetchController extends Controller
                             'number_type' => $p['number_type'] ?? 'unknown',
                             'base_price_usd' => $baseUsd,
                             'current_price_usd' => $currentUsd,
-                            'base_price_ngn' => $this->usdToNgn($baseUsd, $provider),
-                            'current_price_ngn' => $this->usdToNgn($currentUsd, $provider),
+                            'base_price_ngn' => $this->usdToBaseNgn($baseUsd),
+                            'current_price_ngn' => $this->usdToBaseNgn($currentUsd),
                         ];
                     }
                 }
@@ -544,7 +550,7 @@ class ProviderFetchController extends Controller
                             'dial_code' => $dialCodeMap[$code] ?? '',
                             'twilio_code' => $code,
                             'price_usd' => $priceUsd,
-                            'price_ngn' => $this->usdToNgn($priceUsd, $provider),
+                            'price_ngn' => $this->usdToBaseNgn($priceUsd),
                             'already_exists' => in_array($code, $existingCodes),
                         ];
                     }
@@ -680,10 +686,10 @@ class ProviderFetchController extends Controller
                             'number_type' => $type,
                             'base_price_usd' => $monthly,
                             'current_price_usd' => $monthly,
-                            'base_price_ngn' => $this->usdToNgn($monthly, $provider),
-                            'current_price_ngn' => $this->usdToNgn($monthly, $provider),
+                            'base_price_ngn' => $this->usdToBaseNgn($monthly),
+                            'current_price_ngn' => $this->usdToBaseNgn($monthly),
                             'upfront_usd' => $upfront,
-                            'upfront_ngn' => $this->usdToNgn($upfront, $provider),
+                            'upfront_ngn' => $this->usdToBaseNgn($upfront),
                         ];
                     }
                 }
@@ -868,7 +874,7 @@ class ProviderFetchController extends Controller
                     'twilio_code' => $isoCode,
                     'fivesim_name' => $countryName,
                     'price_usd' => 0.50,
-                    'price_ngn' => $this->usdToNgn(0.50, $provider),
+                    'price_ngn' => $this->usdToBaseNgn(0.50),
                     'already_exists' => in_array($isoCode, $existingCodes),
                 ];
             }
@@ -992,8 +998,8 @@ class ProviderFetchController extends Controller
                             'operator' => $opName,
                             'base_price_usd' => $costUsd,
                             'current_price_usd' => $costUsd,
-                            'base_price_ngn' => $this->usdToNgn($costUsd, $provider),
-                            'current_price_ngn' => $this->usdToNgn($costUsd, $provider),
+                            'base_price_ngn' => $this->usdToBaseNgn($costUsd),
+                            'current_price_ngn' => $this->usdToBaseNgn($costUsd),
                             'quantity' => $opData['count'] ?? 0,
                         ];
                     }
@@ -1146,7 +1152,7 @@ class ProviderFetchController extends Controller
 
                 $priceRub = (float) ($data['Price'] ?? 0);
                 $priceUsd = round($priceRub * 0.011, 4);
-                $priceNgn = $this->usdToNgn($priceUsd, $provider);
+                $priceNgn = $this->usdToBaseNgn($priceUsd);
 
                 // Apply a minimum price floor of 100 NGN
                 $suggestedCost = max($priceNgn, 100);
@@ -1427,7 +1433,7 @@ class ProviderFetchController extends Controller
                     'twilio_code' => $isoCode,
                     'smspool_id' => $smsPoolId,
                     'price_usd' => $priceUsd,
-                    'price_ngn' => $this->usdToNgn($priceUsd, $provider),
+                    'price_ngn' => $this->usdToBaseNgn($priceUsd),
                     'already_exists' => in_array($isoCode, $existingCodes),
                 ];
             }
@@ -1444,7 +1450,7 @@ class ProviderFetchController extends Controller
                         'twilio_code' => $iso,
                         'smspool_id' => $id,
                         'price_usd' => 0.10,
-                        'price_ngn' => $this->usdToNgn(0.10, $provider),
+                        'price_ngn' => $this->usdToBaseNgn(0.10),
                         'already_exists' => in_array($iso, $existingCodes),
                     ];
                 }
@@ -1567,8 +1573,8 @@ class ProviderFetchController extends Controller
                         'number_type' => $name,
                         'base_price_usd' => $priceUsd,
                         'current_price_usd' => $priceUsd,
-                        'base_price_ngn' => $this->usdToNgn($priceUsd, $provider),
-                        'current_price_ngn' => $this->usdToNgn($priceUsd, $provider),
+                        'base_price_ngn' => $this->usdToBaseNgn($priceUsd),
+                        'current_price_ngn' => $this->usdToBaseNgn($priceUsd),
                         'quantity' => $entry['amount'] ?? null,
                     ];
                 }
@@ -1642,7 +1648,7 @@ class ProviderFetchController extends Controller
                 $slug = strtolower(preg_replace('/\s+/', '_', $name));
                 $info = $meta[$slug] ?? $meta[strtolower($name)] ?? [];
                 $priceUsd = isset($entry['price']) ? (float) $entry['price'] : 0.10;
-                $priceNgn = max($this->usdToNgn($priceUsd, $provider), 100);
+                $priceNgn = max($this->usdToBaseNgn($priceUsd), 100);
 
                 $results[$slug] = [
                     'name' => $name,

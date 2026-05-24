@@ -828,7 +828,7 @@ class OrderController extends Controller
         try {
             $provider = ApiProvider::where('slug', '5sim')->where('is_active', true)->first();
             if (! $provider) {
-                return $this->resolveCountryPriceFallback($country);
+                return $this->resolveCountryPriceFallback($service, $country);
             }
 
             $fiveSim = FiveSimService::fromProvider($provider);
@@ -839,7 +839,7 @@ class OrderController extends Controller
             $productOperators = $prices[$fiveSimCountry][$product] ?? [];
 
             if (empty($productOperators)) {
-                return $this->resolveCountryPriceFallback($country);
+                return $this->resolveCountryPriceFallback($service, $country);
             }
 
             // Find the requested operator's cost
@@ -876,7 +876,7 @@ class OrderController extends Controller
             }
 
             if (! $costUsd || $costUsd <= 0) {
-                return $this->resolveCountryPriceFallback($country);
+                return $this->resolveCountryPriceFallback($service, $country);
             }
 
             // Use per-provider markup, fall back to global setting
@@ -885,7 +885,9 @@ class OrderController extends Controller
                 $markup = (float) ApiSetting::getValue('pricing_markup_percent', 0);
             }
 
-            $baseNgn = round($costUsd * $rate, 2);
+            $countryBase = $costUsd * $rate;
+            $serviceBase = (float) ($service->cost ?? 0);
+            $baseNgn = $countryBase + $serviceBase;
             $totalNgn = round($baseNgn * (1 + ($markup / 100)), 2);
 
             return $totalNgn;
@@ -893,27 +895,28 @@ class OrderController extends Controller
         } catch (\Exception $e) {
             \Log::warning('Dynamic pricing failed: '.$e->getMessage());
 
-            return $this->resolveCountryPriceFallback($country);
+            return $this->resolveCountryPriceFallback($service, $country);
         }
     }
 
     /**
-     * Fallback: use static country price if 5sim API is unavailable.
+     * Fallback: use static country price + service cost with markup if 5sim API is unavailable.
      */
-    private function resolveCountryPriceFallback(Country $country): float
+    private function resolveCountryPriceFallback(Service $service, Country $country): float
     {
         $rate = (float) ApiSetting::getValue('usd_to_ngn_rate', 1500);
         $markup = (float) ApiSetting::getValue('pricing_markup_percent', 0);
 
+        $countryBase = 0.0;
         if ($country->price && (float) $country->price > 0) {
-            return (float) $country->price;
-        }
-        if ($country->price_usd && (float) $country->price_usd > 0) {
-            $base = round((float) $country->price_usd * $rate, 2);
-
-            return round($base * (1 + ($markup / 100)), 2);
+            $countryBase = (float) $country->price;
+        } elseif ($country->price_usd && (float) $country->price_usd > 0) {
+            $countryBase = (float) $country->price_usd * $rate;
         }
 
-        return 0.0;
+        $serviceBase = (float) ($service->cost ?? 0);
+        $base = $countryBase + $serviceBase;
+
+        return round($base * (1 + ($markup / 100)), 2);
     }
 }
