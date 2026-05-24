@@ -5,135 +5,73 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Verify Your Email — Zyrlent</title>
 </head>
+<body style="margin: 0; padding: 0; background-color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;">
 
-<body style="margin:0; padding:0; background-color:#070D2E; font-family:Segoe UI, Tahoma, Geneva, Verdana, sans-serif;">
-
-<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#070D2E; padding:20px 10px;">
-<tr>
-<td align="center">
-
-<!-- Main Container -->
-<table width="100%" max-width="520" cellpadding="0" cellspacing="0" border="0" style="max-width:520px; background-color:#0F143C; border-radius:16px; overflow:hidden; border:1px solid rgba(0,255,255,0.15);">
-
-    <!-- Header -->
+<table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f8fafc; padding: 40px 16px;">
     <tr>
-        <td align="center" style="padding:30px 20px; background-color:#0A0B3D;">
-            <h1 style="color:#ffffff; margin:0; font-size:24px; font-weight:800;">Zyrlent</h1>
-            <p style="color:#ffffff; margin:6px 0 0; font-size:12px; letter-spacing:2px;">
-                Secure • Fast • Reliable
-            </p>
-        </td>
-    </tr>
-
-    <!-- Welcome -->
-    <tr>
-        <td align="center" style="padding:30px 20px 10px;">
-            <h2 style="color:#ffffff; margin:0 0 10px; font-size:20px;">
-                Welcome to Zyrlent 🚀
-            </h2>
-            <p style="color:#ffffff; margin:0; font-size:14px; line-height:1.6;">
-                We're excited to have you join the platform.
-            </p>
-        </td>
-    </tr>
-
-    <!-- Message -->
-    <tr>
-        <td align="center" style="padding:10px 20px 0;">
-            <p style="color:#ffffff; font-size:14px; line-height:1.6;">
-                Please verify your email address using the code below:
-            </p>
-        </td>
-    </tr>
-
-    <!-- OTP -->
-    <tr>
-        <td align="center" style="padding:25px 20px;">
-            <table cellpadding="0" cellspacing="0" border="0">
+        <td align="center">
+            <!-- Email Wrapper Card -->
+            <table width="100%" max-width="500" cellpadding="0" cellspacing="0" border="0" style="max-width: 500px; background-color: #ffffff; border-radius: 12px; border: 1px solid #e2e8f0; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05), 0 2px 4px -1px rgba(0,0,0,0.03); overflow: hidden;">
+                
+                <!-- Logo & Brand Header -->
                 <tr>
-                    <td align="center" style="padding:20px 30px; border-radius:12px; border:2px solid #00FFFF;">
-                        <span style="font-size:36px; letter-spacing:10px; font-weight:bold; color:#00FFFF;">
-                            {{ $code }}
-                        </span>
+                    <td align="left" style="padding: 32px 32px 24px; border-bottom: 1px solid #f1f5f9;">
+                        <span style="font-size: 20px; font-weight: 800; color: #0a0b3d; letter-spacing: -0.5px;">Zyrlent</span>
+                    </td>
+                </tr>
+
+                <!-- Content Area -->
+                <tr>
+                    <td align="left" style="padding: 32px;">
+                        <h2 style="margin: 0 0 16px; font-size: 18px; font-weight: 700; color: #0f172a;">
+                            Verify your email address
+                        </h2>
+                        
+                        <p style="margin: 0 0 24px; font-size: 14px; line-height: 1.6; color: #475569;">
+                            Thank you for registering. To complete your Zyrlent account setup, please verify your email address by entering the secure 4-digit verification code below:
+                        </p>
+
+                        <!-- OTP Verification Box -->
+                        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 24px;">
+                            <tr>
+                                <td align="center" style="padding: 20px; background-color: #f8fafc; border-radius: 8px; border: 1px dashed #cbd5e1;">
+                                    <span style="font-size: 32px; font-weight: 700; color: #0a0b3d; letter-spacing: 8px; font-family: 'SF Mono', SFMono-Regular, Consolas, 'Liberation Mono', Menlo, Courier, monospace; padding-left: 8px;">
+                                        {{ $code }}
+                                    </span>
+                                </td>
+                            </tr>
+                        </table>
+
+                        <!-- Security Disclaimers (Spam Filters LOVE these) -->
+                        <div style="padding: 16px; background-color: #fffbeb; border-left: 4px solid #f59e0b; border-radius: 4px; margin-bottom: 24px;">
+                            <p style="margin: 0; font-size: 12px; line-height: 1.5; color: #b45309; font-weight: 500;">
+                                <strong>Security Notice:</strong> For your security, never share this code with anyone. Zyrlent staff will never contact you to ask for this code.
+                            </p>
+                        </div>
+
+                        <p style="margin: 0 0 8px; font-size: 13px; color: #64748b; line-height: 1.5;">
+                            This verification code is valid for <strong>10 minutes</strong>.
+                        </p>
+                        <p style="margin: 0; font-size: 12px; color: #94a3b8; line-height: 1.5;">
+                            If you did not request this verification, you can safely ignore this email.
+                        </p>
+                    </td>
+                </tr>
+
+                <!-- Footer Support -->
+                <tr>
+                    <td align="left" style="padding: 24px 32px; background-color: #f8fafc; border-top: 1px solid #e2e8f0;">
+                        <p style="margin: 0; font-size: 12px; color: #64748b; line-height: 1.5;">
+                            Need help? Contact our support team at <a href="mailto:support@zyrlent.com" style="color: #0066cc; text-decoration: none; font-weight: 500;">support@zyrlent.com</a>
+                        </p>
+                        <p style="margin: 8px 0 0; font-size: 11px; color: #94a3b8;">
+                            &copy; 2026 Zyrlent. All rights reserved.
+                        </p>
                     </td>
                 </tr>
             </table>
         </td>
     </tr>
-
-    <!-- Expiry -->
-    <tr>
-        <td align="center" style="padding:0 20px 20px;">
-            <p style="color:#ffffff; font-size:13px;">
-                This code expires in <strong style="color:#00FFFF;">10 minutes</strong>
-            </p>
-            <p style="color:#ffffff; font-size:12px;">
-                If you didn’t request this, you can ignore this email.
-            </p>
-        </td>
-    </tr>
-
-    <!-- Divider -->
-    <tr>
-        <td style="padding:0 20px;">
-            <hr style="border:none; height:1px; background:#1f2a5a;">
-        </td>
-    </tr>
-
-    <!-- Why -->
-    <tr>
-        <td style="padding:20px;">
-            <h3 style="color:#ffffff; font-size:15px;">Why verify your email?</h3>
-
-            <p style="color:#ffffff; font-size:13px;">Verifying helps us:</p>
-
-            <ul style="color:#ffffff; font-size:13px; padding-left:18px;">
-                <li>Protect your account</li>
-                <li>Keep your activity secure</li>
-                <li>Send important updates</li>
-            </ul>
-        </td>
-    </tr>
-
-    <!-- After -->
-    <tr>
-        <td style="padding:0 20px 20px;">
-            <h3 style="color:#ffffff; font-size:15px;">After verification</h3>
-
-            <ul style="color:#ffffff; font-size:13px; padding-left:18px;">
-                <li>Access your dashboard</li>
-                <li>Fund your wallet</li>
-                <li>Receive notifications</li>
-            </ul>
-        </td>
-    </tr>
-
-    <!-- Support -->
-    <tr>
-        <td align="center" style="padding:10px 20px;">
-            <p style="color:#ffffff; font-size:13px;">
-                Need help? Our support team is here for you.
-            </p>
-        </td>
-    </tr>
-
-    <!-- Footer -->
-    <tr>
-        <td align="center" style="padding:20px;">
-            <hr style="border:none; height:1px; background:#1f2a5a; margin-bottom:15px;">
-            <p style="color:#ffffff; font-size:13px; margin:0;">
-                — The Zyrlent Team
-            </p>
-            <p style="color:#00FFFF; font-size:11px; margin-top:5px;">
-                Secure • Fast • Reliable
-            </p>
-        </td>
-    </tr>
-
-</table>
-
-</td>
-</tr>
 </table>
 
 </body>
