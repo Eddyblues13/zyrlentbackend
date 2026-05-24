@@ -12,13 +12,9 @@ class CountryController extends Controller
 
         $rate = (float) \App\Models\ApiSetting::getValue('usd_to_ngn_rate', 1500);
         $provider = \App\Models\ApiProvider::where('slug', '5sim')->where('is_active', true)->first();
-        $markup = 0.0;
-        if ($provider) {
-            $markup = (float) ($provider->markup_percent ?? 0);
-        }
-        if ($markup <= 0) {
-            $markup = (float) \App\Models\ApiSetting::getValue('pricing_markup_percent', 0);
-        }
+        $providerMarkup = $provider ? (float) ($provider->markup_percent ?? 0) : 0.0;
+        $globalMarkup = (float) \App\Models\ApiSetting::getValue('pricing_markup_percent', 0);
+        $markup = $globalMarkup + $providerMarkup;
 
         $countries = Country::where('is_active', true)
             ->withCount('orders')

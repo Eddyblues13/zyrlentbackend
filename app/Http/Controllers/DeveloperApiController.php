@@ -646,10 +646,10 @@ class DeveloperApiController extends Controller
                 return $this->resolveCountryPriceFallback($country);
             }
 
-            $markup = (float) ($provider->markup_percent ?? 0);
-            if ($markup <= 0) {
-                $markup = (float) ApiSetting::getValue('pricing_markup_percent', 0);
-            }
+            // Fetch the markup percent (additive: global markup + provider markup)
+            $globalMarkup = (float) ApiSetting::getValue('pricing_markup_percent', 0);
+            $providerMarkup = (float) ($provider->markup_percent ?? 0);
+            $markup = $globalMarkup + $providerMarkup;
 
             $baseNgn = round($costUsd * $rate, 2);
             $totalNgn = round($baseNgn * (1 + ($markup / 100)), 2);
@@ -664,7 +664,11 @@ class DeveloperApiController extends Controller
     private function resolveCountryPriceFallback(Country $country): float
     {
         $rate = (float) ApiSetting::getValue('usd_to_ngn_rate', 1500);
-        $markup = (float) ApiSetting::getValue('pricing_markup_percent', 0);
+        
+        $provider = ApiProvider::where('slug', '5sim')->where('is_active', true)->first();
+        $providerMarkup = $provider ? (float) ($provider->markup_percent ?? 0) : 0.0;
+        $globalMarkup = (float) ApiSetting::getValue('pricing_markup_percent', 0);
+        $markup = $globalMarkup + $providerMarkup;
 
         if ($country->price && (float) $country->price > 0) {
             $base = (float) $country->price;

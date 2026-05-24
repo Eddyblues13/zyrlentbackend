@@ -26,13 +26,12 @@ class ProviderFetchController extends Controller
 
     private function getMarkupPercent(?ApiProvider $provider = null): float
     {
+        $globalMarkup = (float) ApiSetting::getValue('pricing_markup_percent', 0);
         if ($provider) {
             $providerMarkup = (float) ($provider->markup_percent ?? 0);
-            if ($providerMarkup > 0) {
-                return $providerMarkup;
-            }
+            return $globalMarkup + $providerMarkup;
         }
-        return (float) ApiSetting::getValue('pricing_markup_percent', 0);
+        return $globalMarkup;
     }
 
     private function usdToNgn(float $usd, ?ApiProvider $provider = null): float

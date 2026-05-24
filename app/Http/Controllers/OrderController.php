@@ -787,11 +787,10 @@ class OrderController extends Controller
             // Get prices for this country — returns {country: {product: {operator: {cost,count,rate}}}}
             $prices = $fiveSim->getPrices($fiveSimCountry);
 
-            // Fetch the markup percent (provider specific or fallback to global)
-            $markup = (float) ($provider->markup_percent ?? 0);
-            if ($markup <= 0) {
-                $markup = (float) ApiSetting::getValue('pricing_markup_percent', 0);
-            }
+            // Fetch the markup percent (additive: global markup + provider markup)
+            $globalMarkup = (float) ApiSetting::getValue('pricing_markup_percent', 0);
+            $providerMarkup = (float) ($provider->markup_percent ?? 0);
+            $markup = $globalMarkup + $providerMarkup;
 
             $operators = [];
             $productOperators = $prices[$fiveSimCountry][$product] ?? [];
@@ -894,11 +893,10 @@ class OrderController extends Controller
                 return $this->resolveCountryPriceFallback($service, $country);
             }
 
-            // Use per-provider markup, fall back to global setting
-            $markup = (float) ($provider->markup_percent ?? 0);
-            if ($markup <= 0) {
-                $markup = (float) ApiSetting::getValue('pricing_markup_percent', 0);
-            }
+            // Fetch the markup percent (additive: global markup + provider markup)
+            $globalMarkup = (float) ApiSetting::getValue('pricing_markup_percent', 0);
+            $providerMarkup = (float) ($provider->markup_percent ?? 0);
+            $markup = $globalMarkup + $providerMarkup;
 
             $countryBase = $costUsd * $rate;
             $serviceBase = (float) ($service->cost ?? 0);
@@ -921,7 +919,11 @@ class OrderController extends Controller
     private function resolveCountryPriceFallback(Service $service, Country $country): float
     {
         $rate = (float) ApiSetting::getValue('usd_to_ngn_rate', 1500);
-        $markup = (float) ApiSetting::getValue('pricing_markup_percent', 0);
+        
+        $provider = ApiProvider::where('slug', '5sim')->where('is_active', true)->first();
+        $providerMarkup = $provider ? (float) ($provider->markup_percent ?? 0) : 0.0;
+        $globalMarkup = (float) ApiSetting::getValue('pricing_markup_percent', 0);
+        $markup = $globalMarkup + $providerMarkup;
 
         $countryBase = 0.0;
         if ($country->price && (float) $country->price > 0) {
