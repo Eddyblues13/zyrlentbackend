@@ -24,15 +24,21 @@ class ProviderFetchController extends Controller
         return (float) ApiSetting::getValue('usd_to_ngn_rate', 1500);
     }
 
-    private function getMarkupPercent(): float
+    private function getMarkupPercent(?ApiProvider $provider = null): float
     {
+        if ($provider) {
+            $providerMarkup = (float) ($provider->markup_percent ?? 0);
+            if ($providerMarkup > 0) {
+                return $providerMarkup;
+            }
+        }
         return (float) ApiSetting::getValue('pricing_markup_percent', 0);
     }
 
-    private function usdToNgn(float $usd): float
+    private function usdToNgn(float $usd, ?ApiProvider $provider = null): float
     {
         $rate = $this->getExchangeRate();
-        $markup = $this->getMarkupPercent();
+        $markup = $this->getMarkupPercent($provider);
         $base = $usd * $rate;
 
         return round($base * (1 + ($markup / 100)), 2);
@@ -310,12 +316,12 @@ class ProviderFetchController extends Controller
             $dialCodeMap = $this->getDialCodeMap();
             $existingCodes = Country::pluck('code')->map(fn ($c) => strtoupper($c))->toArray();
             $rate = $this->getExchangeRate();
-            $markup = $this->getMarkupPercent();
+            $markup = $this->getMarkupPercent($provider);
 
             foreach ($countries as $country) {
                 $code = strtoupper($country->countryCode);
                 $priceUsd = $this->estimateTwilioPrice($code);
-                $priceNgn = $this->usdToNgn($priceUsd);
+                $priceNgn = $this->usdToNgn($priceUsd, $provider);
 
                 $results[] = [
                     'name' => $country->country,
@@ -425,7 +431,7 @@ class ProviderFetchController extends Controller
         try {
             $twilio = $this->getTwilioClient($provider);
             $rate = $this->getExchangeRate();
-            $markup = $this->getMarkupPercent();
+            $markup = $this->getMarkupPercent($provider);
 
             if ($countryCode) {
                 $pricing = $twilio->pricing->v1->phoneNumbers
@@ -441,8 +447,8 @@ class ProviderFetchController extends Controller
                             'number_type' => $p['number_type'] ?? 'unknown',
                             'base_price_usd' => $baseUsd,
                             'current_price_usd' => $currentUsd,
-                            'base_price_ngn' => $this->usdToNgn($baseUsd),
-                            'current_price_ngn' => $this->usdToNgn($currentUsd),
+                            'base_price_ngn' => $this->usdToNgn($baseUsd, $provider),
+                            'current_price_ngn' => $this->usdToNgn($currentUsd, $provider),
                         ];
                     }
                 }
@@ -519,7 +525,7 @@ class ProviderFetchController extends Controller
             $dialCodeMap = $this->getDialCodeMap();
             $existingCodes = Country::pluck('code')->map(fn ($c) => strtoupper($c))->toArray();
             $rate = $this->getExchangeRate();
-            $markup = $this->getMarkupPercent();
+            $markup = $this->getMarkupPercent($provider);
 
             $results = [];
             foreach ($countryCodes as $code) {
@@ -538,7 +544,7 @@ class ProviderFetchController extends Controller
                             'dial_code' => $dialCodeMap[$code] ?? '',
                             'twilio_code' => $code,
                             'price_usd' => $priceUsd,
-                            'price_ngn' => $this->usdToNgn($priceUsd),
+                            'price_ngn' => $this->usdToNgn($priceUsd, $provider),
                             'already_exists' => in_array($code, $existingCodes),
                         ];
                     }
@@ -645,7 +651,7 @@ class ProviderFetchController extends Controller
     {
         try {
             $rate = $this->getExchangeRate();
-            $markup = $this->getMarkupPercent();
+            $markup = $this->getMarkupPercent($provider);
 
             if ($countryCode) {
                 // Fetch pricing for a specific country by searching for numbers
@@ -674,10 +680,10 @@ class ProviderFetchController extends Controller
                             'number_type' => $type,
                             'base_price_usd' => $monthly,
                             'current_price_usd' => $monthly,
-                            'base_price_ngn' => $this->usdToNgn($monthly),
-                            'current_price_ngn' => $this->usdToNgn($monthly),
+                            'base_price_ngn' => $this->usdToNgn($monthly, $provider),
+                            'current_price_ngn' => $this->usdToNgn($monthly, $provider),
                             'upfront_usd' => $upfront,
-                            'upfront_ngn' => $this->usdToNgn($upfront),
+                            'upfront_ngn' => $this->usdToNgn($upfront, $provider),
                         ];
                     }
                 }
@@ -840,7 +846,7 @@ class ProviderFetchController extends Controller
             $dialCodeMap = $this->getDialCodeMap();
             $existingCodes = Country::pluck('code')->map(fn ($c) => strtoupper($c))->toArray();
             $rate = $this->getExchangeRate();
-            $markup = $this->getMarkupPercent();
+            $markup = $this->getMarkupPercent($provider);
 
             // 5sim returns an object keyed by country name: { "russia": {...}, "ukraine": {...} }
             $nameToIso = array_flip(FiveSimService::COUNTRY_MAP);
@@ -862,7 +868,7 @@ class ProviderFetchController extends Controller
                     'twilio_code' => $isoCode,
                     'fivesim_name' => $countryName,
                     'price_usd' => 0.50,
-                    'price_ngn' => $this->usdToNgn(0.50),
+                    'price_ngn' => $this->usdToNgn(0.50, $provider),
                     'already_exists' => in_array($isoCode, $existingCodes),
                 ];
             }
@@ -960,7 +966,7 @@ class ProviderFetchController extends Controller
         try {
             $fiveSim = FiveSimService::fromProvider($provider);
             $rate = $this->getExchangeRate();
-            $markup = $this->getMarkupPercent();
+            $markup = $this->getMarkupPercent($provider);
 
             if ($countryCode) {
                 $countryName = FiveSimService::mapCountryCode(strtoupper($countryCode));
@@ -986,8 +992,8 @@ class ProviderFetchController extends Controller
                             'operator' => $opName,
                             'base_price_usd' => $costUsd,
                             'current_price_usd' => $costUsd,
-                            'base_price_ngn' => $this->usdToNgn($costUsd),
-                            'current_price_ngn' => $this->usdToNgn($costUsd),
+                            'base_price_ngn' => $this->usdToNgn($costUsd, $provider),
+                            'current_price_ngn' => $this->usdToNgn($costUsd, $provider),
                             'quantity' => $opData['count'] ?? 0,
                         ];
                     }
@@ -1131,7 +1137,7 @@ class ProviderFetchController extends Controller
 
             $existingNames = Service::pluck('name')->map(fn ($n) => strtolower($n))->toArray();
             $rate = $this->getExchangeRate();
-            $markup = $this->getMarkupPercent();
+            $markup = $this->getMarkupPercent($provider);
 
             $results = [];
             foreach ($products as $productName => $data) {
@@ -1140,7 +1146,7 @@ class ProviderFetchController extends Controller
 
                 $priceRub = (float) ($data['Price'] ?? 0);
                 $priceUsd = round($priceRub * 0.011, 4);
-                $priceNgn = $this->usdToNgn($priceUsd);
+                $priceNgn = $this->usdToNgn($priceUsd, $provider);
 
                 // Apply a minimum price floor of 100 NGN
                 $suggestedCost = max($priceNgn, 100);
@@ -1395,7 +1401,7 @@ class ProviderFetchController extends Controller
             $dialCodeMap = $this->getDialCodeMap();
             $existingCodes = Country::pluck('code')->map(fn ($c) => strtoupper($c))->toArray();
             $rate = $this->getExchangeRate();
-            $markup = $this->getMarkupPercent();
+            $markup = $this->getMarkupPercent($provider);
 
             $results = [];
 
@@ -1421,7 +1427,7 @@ class ProviderFetchController extends Controller
                     'twilio_code' => $isoCode,
                     'smspool_id' => $smsPoolId,
                     'price_usd' => $priceUsd,
-                    'price_ngn' => $this->usdToNgn($priceUsd),
+                    'price_ngn' => $this->usdToNgn($priceUsd, $provider),
                     'already_exists' => in_array($isoCode, $existingCodes),
                 ];
             }
@@ -1438,7 +1444,7 @@ class ProviderFetchController extends Controller
                         'twilio_code' => $iso,
                         'smspool_id' => $id,
                         'price_usd' => 0.10,
-                        'price_ngn' => $this->usdToNgn(0.10),
+                        'price_ngn' => $this->usdToNgn(0.10, $provider),
                         'already_exists' => in_array($iso, $existingCodes),
                     ];
                 }
@@ -1537,7 +1543,7 @@ class ProviderFetchController extends Controller
         try {
             $smsPool = SmsPoolService::fromProvider($provider);
             $rate = $this->getExchangeRate();
-            $markup = $this->getMarkupPercent();
+            $markup = $this->getMarkupPercent($provider);
 
             if ($countryCode) {
                 $smsPoolCountryId = SmsPoolService::mapCountryCode(strtoupper($countryCode));
@@ -1561,8 +1567,8 @@ class ProviderFetchController extends Controller
                         'number_type' => $name,
                         'base_price_usd' => $priceUsd,
                         'current_price_usd' => $priceUsd,
-                        'base_price_ngn' => $this->usdToNgn($priceUsd),
-                        'current_price_ngn' => $this->usdToNgn($priceUsd),
+                        'base_price_ngn' => $this->usdToNgn($priceUsd, $provider),
+                        'current_price_ngn' => $this->usdToNgn($priceUsd, $provider),
                         'quantity' => $entry['amount'] ?? null,
                     ];
                 }
@@ -1618,7 +1624,7 @@ class ProviderFetchController extends Controller
             $meta = $this->getProductMeta();
             $existingNames = Service::pluck('name')->map(fn ($n) => strtolower($n))->toArray();
             $rate = $this->getExchangeRate();
-            $markup = $this->getMarkupPercent();
+            $markup = $this->getMarkupPercent($provider);
 
             $results = [];
 
@@ -1636,7 +1642,7 @@ class ProviderFetchController extends Controller
                 $slug = strtolower(preg_replace('/\s+/', '_', $name));
                 $info = $meta[$slug] ?? $meta[strtolower($name)] ?? [];
                 $priceUsd = isset($entry['price']) ? (float) $entry['price'] : 0.10;
-                $priceNgn = max($this->usdToNgn($priceUsd), 100);
+                $priceNgn = max($this->usdToNgn($priceUsd, $provider), 100);
 
                 $results[$slug] = [
                     'name' => $name,

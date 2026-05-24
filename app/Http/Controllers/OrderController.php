@@ -906,9 +906,7 @@ class OrderController extends Controller
         $markup = (float) ApiSetting::getValue('pricing_markup_percent', 0);
 
         if ($country->price && (float) $country->price > 0) {
-            $base = (float) $country->price;
-
-            return round($base * (1 + ($markup / 100)), 2);
+            return (float) $country->price;
         }
         if ($country->price_usd && (float) $country->price_usd > 0) {
             $base = round((float) $country->price_usd * $rate, 2);
