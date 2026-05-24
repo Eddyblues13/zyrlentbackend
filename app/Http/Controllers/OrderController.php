@@ -819,7 +819,13 @@ class OrderController extends Controller
     }
 
     /**
-     * Fetch the real operator cost from 5sim and convert to NGN with markup.
+     * Fetch the real-time operator cost from 5sim and apply markup.
+     *
+     * Live Price = ( (Live USD Cost × Exchange Rate) + Service Cost ) × (1 + Markup%)
+     *
+     * Whatever the live price is at that moment, the admin's markup percentage
+     * increases it by exactly that amount. Falls back to stored DB prices
+     * if the live API is unavailable.
      */
     private function resolveDynamicPrice(Service $service, Country $country, string $operator = 'any'): float
     {
@@ -900,7 +906,8 @@ class OrderController extends Controller
     }
 
     /**
-     * Fallback: use static country price + service cost with markup if 5sim API is unavailable.
+     * Fallback: use static country price + service cost with markup.
+     * Used when the live API is unavailable.
      */
     private function resolveCountryPriceFallback(Service $service, Country $country): float
     {
