@@ -53,11 +53,18 @@ class AuthController extends Controller
             ]);
         }
 
-        // Generate and send 4-digit verification code
-        $this->generateAndSendCode($user->email);
+        // OTP email verification temporarily disabled — auto-verify and log the user in
+        // $this->generateAndSendCode($user->email);
+        $user->email_verified_at = now();
+        $user->save();
+
+        $token = $user->createToken('auth_token')->plainTextToken;
 
         return response()->json([
-            'message' => 'Registration successful. Please check your email for a verification code.',
+            'message' => 'Registration successful.',
+            'access_token' => $token,
+            'token_type' => 'Bearer',
+            'user' => $user,
             'email' => $user->email,
         ], 201);
     }
@@ -159,17 +166,15 @@ class AuthController extends Controller
             ]);
         }
 
-        // Check if email is verified
-        if (!$user->email_verified_at) {
-            // Resend verification code
-            $this->generateAndSendCode($user->email);
-
-            return response()->json([
-                'message' => 'Your email is not verified. A new verification code has been sent.',
-                'requires_verification' => true,
-                'email' => $user->email,
-            ], 403);
-        }
+        // OTP email verification temporarily disabled — allow unverified users to log in
+        // if (!$user->email_verified_at) {
+        //     $this->generateAndSendCode($user->email);
+        //     return response()->json([
+        //         'message' => 'Your email is not verified. A new verification code has been sent.',
+        //         'requires_verification' => true,
+        //         'email' => $user->email,
+        //     ], 403);
+        // }
 
         // Record login history
         $this->recordLoginHistory($user, $request, 'success');

@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\CurrencyController;
 use App\Http\Controllers\CountryController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\OrderController;
@@ -26,6 +27,7 @@ use App\Http\Controllers\Admin\NumberInventoryController;
 use Illuminate\Support\Facades\Route;
 
 // ─── Public (no auth) ───────────────────────────────────────
+Route::get('/currency', [CurrencyController::class, 'detect']);
 Route::post('/register', [AuthController::class, 'register']);
 Route::post('/login', [AuthController::class, 'login']);
 Route::post('/verify-email', [AuthController::class, 'verifyEmail']);
