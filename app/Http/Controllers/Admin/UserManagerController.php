@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Mail\AdminMessageMail;
 use App\Models\AdminNotification;
 use App\Models\LoginHistory;
 use App\Models\NumberOrder;
@@ -260,9 +261,9 @@ class UserManagerController extends Controller
         ]);
 
         try {
-            Mail::raw($request->body, function ($mail) use ($user, $request) {
-                $mail->to($user->email)->subject($request->subject);
-            });
+            Mail::to($user->email)->send(
+                new AdminMessageMail($request->subject, $request->body, $user->name)
+            );
 
             return response()->json(['message' => "Email sent to {$user->email}."]);
         } catch (\Exception $e) {

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Mail\AdminMessageMail;
 use App\Models\AdminNotification;
 use App\Models\User;
 use Illuminate\Http\Request;
@@ -102,17 +103,17 @@ class NotificationController extends Controller
             'body'    => 'required|string|max:5000',
         ]);
 
-        $users = User::where('is_suspended', false)->pluck('email');
+        $users = User::where('is_suspended', false)->get(['name', 'email']);
 
         $sent = 0;
-        foreach ($users as $email) {
+        foreach ($users as $user) {
             try {
-                Mail::raw($request->body, function ($mail) use ($email, $request) {
-                    $mail->to($email)->subject($request->subject);
-                });
+                Mail::to($user->email)->send(
+                    new AdminMessageMail($request->subject, $request->body, $user->name)
+                );
                 $sent++;
             } catch (\Exception $e) {
-                \Log::warning("Email blast failed for {$email}: " . $e->getMessage());
+                \Log::warning("Email blast failed for {$user->email}: " . $e->getMessage());
             }
         }
 
